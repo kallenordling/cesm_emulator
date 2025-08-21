@@ -53,7 +53,7 @@ for YEAR in range(1850,2101):
 	    target_mean=None,
 	    target_std=None,
 	)
-	da=unstandardize(da,t_mean,t_std)
+	da=unstandardize(da,t_mean,t_std)-273.1
 	print(da,t_mean,t_std) 
 	da.to_netcdf(OUT)   
 '''
