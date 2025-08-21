@@ -920,7 +920,7 @@ def main(config: Dict[str, Any]):
                 quad_path = os.path.join(save_dir, "samples", f"epoch_{epoch:04d}_quad_xai.png")
                 save_quad_with_saliency(diffusion, cond_fix, truth_fix, quad_path, device)
                 print(f"Saved quad+saliency -> {quad_path}")
-            '''
+            
             if config["train"].get("xai", {}).get("counterfactual", False) :
                 cf_path = os.path.join(save_dir, f"epoch_{epoch:04d}_counterfactual.png")
                 save_counterfactual_panels(
@@ -933,8 +933,8 @@ def main(config: Dict[str, Any]):
                 data_cfg=data_cfg
                 )
                 print(f"Saved cf -> {cf_path}")
-            '''
-            if not config["train"].get("xai", {}).get("saliency", False):
+            
+            if not (config["train"].get("xai", {}).get("counterfactual", False) or config["train"].get("xai", {}).get("saliency", False)):
                 save_triptych_samples(diffusion, cond_fix, truth_fix, trip_path, device)
                 print(f"Saved triptych -> {trip_path}")
             
