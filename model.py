@@ -103,7 +103,7 @@ class Diffusion(nn.Module):
         # Map our config to diffusers naming
         schedule_name = "squaredcos_cap_v2" if beta_schedule == "cosine" else "linear"
         self.scheduler = DDPMScheduler(num_train_timesteps=timesteps, beta_schedule=schedule_name)
- torch.cumprod(alphas, dim=0)
+        torch.cumprod(alphas, dim=0)
         alphas_cumprod_prev = torch.cat([torch.tensor([1.0]), alphas_cumprod[:-1]], dim=0)
 
         self.register_buffer("betas", betas)
