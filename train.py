@@ -1001,7 +1001,9 @@ def main(config: Dict[str, Any]):
             cond_fix, truth_fix = fixed_preview
             trip_path = os.path.join(save_dir, "samples", f"epoch_{epoch:04d}_triptych.png")
             print("path",trip_path)
-            
+            save_triptych_samples(diffusion, cond_fix, truth_fix, trip_path, device)
+            print(f"Saved triptych -> {trip_path}"
+            '''
             if config["train"].get("xai", {}).get("saliency", False):
                 quad_path = os.path.join(save_dir, "samples", f"epoch_{epoch:04d}_quad_xai.png")
                 save_quad_with_saliency(diffusion, cond_fix, truth_fix, quad_path, device)
@@ -1025,7 +1027,7 @@ def main(config: Dict[str, Any]):
                 print(f"Saved triptych -> {trip_path}")
             
             
-            
+            '''
         
         if is_dist():
             dist.barrier()
