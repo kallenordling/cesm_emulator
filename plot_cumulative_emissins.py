@@ -20,7 +20,7 @@ COND_VAR = "CO2_em_anthro"
 YEAR = 2010                           # <- pick the year you want
 TMP = "cond_year.nc"        # temp file for the one-year subset
 OUT = "predicted/pred_TREFHT_2010.nc" # optional output
-TARGET_FILE = "splits/fold_1/climate_data_train_fold1.nc"  # use the file used for that checkpoint
+TARGET_FILE = "../CESM2-LESN_emulator/splits/fold_1/climate_data_train_fold1.nc"  # use the file used for that checkpoint
 TARGET_VAR  = "TREFHT"
 
 with xr.open_dataset(TARGET_FILE) as ds:
