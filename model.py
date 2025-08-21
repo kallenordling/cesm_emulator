@@ -1,112 +1,167 @@
 
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from diffusers import DDPMScheduler
 
-# Import your 3D UNet backbone
+# Import your 3D model architecture (you uploaded video_net.py separately)
 from video_net import UNetModel3D
 
 # -----------------------------
 # Helpers
 # -----------------------------
 
-def _latitude_weights(H: int, device):
-    lat = torch.linspace(-90, 90, steps=H, device=device)
-    w = torch.cos(torch.deg2rad(lat)).clamp_min(0)
-    return w / (w.mean() + 1e-8)
+def timestep_embedding(t, dim):
+    device = t.device
+    half = dim // 2
+    if half < 1:
+        return t.float().unsqueeze(1)
+    freqs = torch.exp(torch.arange(half, device=device) * -(math.log(10000.0) / (half - 1 if half > 1 else 1)))
+    args = t.float()[:, None] * freqs[None, :]
+    emb = torch.cat([torch.sin(args), torch.cos(args)], dim=-1)
+    if dim % 2 == 1:
+        emb = F.pad(emb, (0, 1))
+    return emb
 
-def _area_weighted_mean(x):
-    # x: [B, C, H, W]
-    B, C, H, W = x.shape
-    w = _latitude_weights(H, x.device).view(1, 1, H, 1)
-    return (x * w).mean(dim=(-2, -1))  # [B, C]
+class SiLU(nn.Module):
+    def forward(self, x):
+        return x * torch.sigmoid(x)
 
 # -----------------------------
-# UNet wrapper (if needed)
+# 2D-facing wrapper around your 3D UNet
+# Keeps train.py API the same: forward(x, cond, t) -> (B,1,H,W)
+# Internally: adds a singleton time dim (T=1) and calls UNetModel3D
 # -----------------------------
+
 
 class UNet(nn.Module):
-    """Thin wrapper if your training code expects UNet() type."""
-    def __init__(self, **kwargs):
+    """
+    Compatibility wrapper so build_model_from_config(**cfg) with keys like
+    in_channels/out_channels/base_ch/ch_mults/groups works with UNetModel3D.
+    We assume a single target variable (out_channels == 1) and pass the
+    conditioning map separately (cond_map) each forward.
+    """
+    def __init__(
+        self,
+        in_channels: int = 2,     # (ignored, UNetModel3D derives in/out from n_vars & cond_map)
+        out_channels: int = 1,    # number of target variables (n_vars)
+        base_ch: int = 64,        # -> model_dim
+        ch_mults=(1, 2, 4),       # -> dim_mults
+        num_res_blocks: int = 2,  # (unused; UNetModel3D fixes 2 per level internally)
+        time_dim: int = 256,      # (unused; UNetModel3D derives)
+        groups: int = 8,          # -> resnet_groups
+        dropout: float = 0.0,     # (unused)
+        attn_heads: int = 8,
+        attn_dim_head: int = 32,
+        use_sparse_linear_attn: bool = True,
+        use_mid_attn: bool = False,
+        init_kernel_size: int = 7,
+        use_checkpoint: bool = False,
+        use_temp_attn: bool = True,
+        day_cond: bool = False,
+        year_cond: bool = False,
+        cond_map: bool = True,
+    ):
         super().__init__()
-        self.model = UNetModel3D(**kwargs)
+        # n_vars = number of predicted channels
+        n_vars = out_channels
+        self.net = UNetModel3D(
+            n_vars=n_vars,
+            model_dim=base_ch,
+            dim_mults=tuple(ch_mults),
+            attn_heads=attn_heads,
+            attn_dim_head=attn_dim_head,
+            use_sparse_linear_attn=use_sparse_linear_attn,
+            use_mid_attn=use_mid_attn,
+            init_kernel_size=init_kernel_size,
+            resnet_groups=groups,
+            use_checkpoint=use_checkpoint,
+            use_temp_attn=use_temp_attn,
+            day_cond=day_cond,
+            year_cond=year_cond,
+            cond_map=cond_map,
+        )
 
     def forward(self, x_t, cond, t):
-        # Adjust to your UNetModel3D forward signature if different
-        return self.model(x_t, cond, t)
+        # UNetModel3D expects 5D tensors [B, C, F, H, W] and optional cond_map
+        if x_t.ndim == 4:
+            x_t = x_t.unsqueeze(2)  # add frames dim F=1
+        if cond is not None and cond.ndim == 4:
+            cond = cond.unsqueeze(2)
+        # Forward through 3D UNet; we do not pass day/year embeddings here
+        out = self.net(x_t, t, days=None, years=None, cond_map=cond)
+        if out.ndim == 5 and out.shape[2] == 1:
+            out = out.squeeze(2)
+        return out
 
 # -----------------------------
-# Diffusion with diffusers Scheduler
+# Diffusion wrapper (2D API)
+# Uses standard DDPM math in 2D, but calls the wrapped 3D model under the hood.
 # -----------------------------
 
 class Diffusion(nn.Module):
-    def __init__(
-        self,
-        model: nn.Module,
-        img_channels: int = 1,
-        timesteps: int = 1000,
-        beta_schedule: str = "linear",   # "linear" or "cosine"
-        cond_loss_scaling: float = 0.0,
-        lat_weighted_loss: bool = True,
-    ):
+    def __init__(self, model, img_channels=1, timesteps=1000, beta_schedule="linear"):
         super().__init__()
         self.model = model
         self.img_channels = img_channels
         self.T = timesteps
-        self.cond_loss_scaling = cond_loss_scaling
-        self.lat_weighted_loss = lat_weighted_loss
 
-        schedule_name = "squaredcos_cap_v2" if beta_schedule == "cosine" else "linear"
-        self.scheduler = DDPMScheduler(num_train_timesteps=timesteps, beta_schedule=schedule_name)
+        if beta_schedule == "linear":
+            beta_start, beta_end = 1e-4, 2e-2
+            betas = torch.linspace(beta_start, beta_end, timesteps)
+        else:
+            raise ValueError("Only 'linear' beta_schedule implemented")
+
+        alphas = 1.0 - betas
+        alphas_cumprod = torch.cumprod(alphas, dim=0)
+        alphas_cumprod_prev = torch.cat([torch.tensor([1.0]), alphas_cumprod[:-1]], dim=0)
+
+        self.register_buffer("betas", betas)
+        self.register_buffer("alphas", alphas)
+        self.register_buffer("alphas_cumprod", alphas_cumprod)
+        self.register_buffer("alphas_cumprod_prev", alphas_cumprod_prev)
+        self.register_buffer("sqrt_alphas_cumprod", torch.sqrt(alphas_cumprod))
+        self.register_buffer("sqrt_one_minus_alphas_cumprod", torch.sqrt(1.0 - alphas_cumprod))
+        self.register_buffer("sqrt_recip_alphas", torch.sqrt(1.0 / alphas))
+        self.register_buffer("posterior_variance", betas * (1.0 - alphas_cumprod_prev) / (1.0 - alphas_cumprod))
 
     @torch.no_grad()
-    def sample(self, cond: torch.Tensor, shape=None, device=None):
-        device = device or (cond.device if isinstance(cond, torch.Tensor) else torch.device("cuda" if torch.cuda.is_available() else "cpu"))
-        B = cond.size(0)
-        if shape is None:
-            H, W = cond.shape[-2], cond.shape[-1]
-            shape = (B, self.img_channels, H, W)
+    def p_sample(self, x_t, cond, t):
+        # Standard DDPM update but noise prediction comes from the wrapped 3D model
+        betas_t = self.betas[t].view(-1, 1, 1, 1)
+        sqrt_one_minus_alphas_cumprod_t = self.sqrt_one_minus_alphas_cumprod[t].view(-1, 1, 1, 1)
+        sqrt_recip_alphas_t = self.sqrt_recip_alphas[t].view(-1, 1, 1, 1)
 
+        eps_theta = self.model(x_t, cond, t)  # -> (B,1,H,W)
+        model_mean = sqrt_recip_alphas_t * (x_t - betas_t / sqrt_one_minus_alphas_cumprod_t * eps_theta)
+
+        if (t == 0).all():
+            return model_mean
+        else:
+            posterior_var_t = self.posterior_variance[t].view(-1, 1, 1, 1)
+            noise = torch.randn_like(x_t)
+            return model_mean + torch.sqrt(posterior_var_t) * noise
+
+    @torch.no_grad()
+    def sample(self, cond, shape, device):
+        # shape: (B,1,H,W) — same as before
+        B, _, H, W = shape
         x = torch.randn(shape, device=device)
-        self.scheduler.set_timesteps(self.T, device=device)
-        for t in self.scheduler.timesteps:
-            t_tensor = torch.full((B,), int(t), device=device, dtype=torch.long)
+        for tt in reversed(range(self.T)):
+            t_tensor = torch.full((B,), tt, device=device, dtype=torch.long)
             x = self.p_sample(x, cond, t_tensor)
         return x
 
-    def p_sample(self, x_t: torch.Tensor, cond: torch.Tensor, t: torch.Tensor):
-        # Predict noise and take one reverse-diffusion step via diffusers scheduler
-        eps_pred = self.model(x_t, cond, t)
-        out = self.scheduler.step(eps_pred, t, x_t)
-        return out.prev_sample
-
-    def q_sample(self, x0: torch.Tensor, t: torch.Tensor, noise: torch.Tensor | None = None):
+    def q_sample(self, x0, t, noise=None):
         if noise is None:
             noise = torch.randn_like(x0)
-        return self.scheduler.add_noise(x0, noise, t), noise
+        sqrt_a_bar = self.sqrt_alphas_cumprod[t].view(-1, 1, 1, 1)
+        sqrt_one_minus_a_bar = self.sqrt_one_minus_alphas_cumprod[t].view(-1, 1, 1, 1)
+        return sqrt_a_bar * x0 + sqrt_one_minus_a_bar * noise, noise
 
-    def loss(self, x0: torch.Tensor, cond: torch.Tensor):
+    def loss(self, x0, cond):
         B = x0.size(0)
         t = torch.randint(0, self.T, (B,), device=x0.device).long()
-        noise = torch.randn_like(x0)
-        x_t = self.scheduler.add_noise(x0, noise, t)
+        x_t, noise = self.q_sample(x0, t)
         eps_pred = self.model(x_t, cond, t)
-
-        # latitude-weighted noise MSE
-        if self.lat_weighted_loss:
-            H = eps_pred.shape[-2]
-            w = _latitude_weights(H, eps_pred.device).view(1, 1, H, 1)
-            mse = ((eps_pred - noise) ** 2 * w).mean()
-        else:
-            mse = F.mse_loss(eps_pred, noise)
-
-        # reconstruct x0_hat using alpha_bar from scheduler
-        a_bar = self.scheduler.alphas_cumprod.to(x0.device)[t].view(-1, 1, 1, 1)
-        x0_hat = (x_t - torch.sqrt(1 - a_bar) * eps_pred) / (torch.sqrt(a_bar) + 1e-8)
-
-        mean_hat = _area_weighted_mean(x0_hat)
-        mean_true = _area_weighted_mean(x0)
-        cond_loss = ((mean_hat - mean_true) ** 2).mean()
-
-        return mse + self.cond_loss_scaling * cond_loss
+        return F.mse_loss(eps_pred, noise)
