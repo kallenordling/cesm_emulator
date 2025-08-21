@@ -27,7 +27,7 @@ with xr.open_dataset(TARGET_FILE) as ds:
     da = ds[TARGET_VAR].load()  # dims like (year, member_id, lat, lon)
     t_mean = float(da.mean().values)
     t_std  = float(da.std().values)
-for YEAR in range(1898,2101):
+for YEAR in range(1850,2101):
 	OUT = "predicted/pred_TREFHT_"+str(YEAR)+".nc" # optional output
 	print("mean:", t_mean, "std:", t_std)
 	# 1) Make a one-year subset (adjust dim names if needed)
