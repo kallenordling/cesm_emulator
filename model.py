@@ -3,6 +3,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from diffusers import DDPMScheduler
 
 # Import your 3D model architecture (you uploaded video_net.py separately)
 from video_net import UNetModel3D
@@ -10,30 +11,15 @@ from video_net import UNetModel3D
 # -----------------------------
 # Helpers
 
-# Extra helpers for schedules & latitude weighting
-
-def _cosine_beta_schedule(T: int, s: float = 0.008):
-    """Cosine schedule from Nichol & Dhariwal (2021)."""
-    import torch, math
-    steps = T + 1
-    t = torch.linspace(0, T, steps, dtype=torch.float32)
-    f = torch.cos(((t / T) + s) / (1 + s) * math.pi / 2) ** 2
-    alphas_cumprod = f / f[0]
-    betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
-    return betas.clamp(1e-8, 0.999)
-
 def _latitude_weights(H: int, device):
-    import torch
     lat = torch.linspace(-90, 90, steps=H, device=device)
     w = torch.cos(torch.deg2rad(lat)).clamp_min(0)
     return w / (w.mean() + 1e-8)
 
 def _area_weighted_mean(x):
-    # x: [B, C, H, W]
-    import torch
     B, C, H, W = x.shape
     w = _latitude_weights(H, x.device).view(1, 1, H, 1)
-    return (x * w).mean(dim=(-2, -1))  # [B, C]
+    return (x * w).mean(dim=(-2, -1))
 
 # -----------------------------
 
@@ -114,16 +100,10 @@ class Diffusion(nn.Module):
         self.cond_loss_scaling = cond_loss_scaling
         self.lat_weighted_loss = lat_weighted_loss
 
-        if beta_schedule == "linear":
-            beta_start, beta_end = 1e-4, 2e-2
-            betas = torch.linspace(beta_start, beta_end, timesteps)
-        elif beta_schedule == "cosine":
-            betas = _cosine_beta_schedule(timesteps)
-        else:
-            raise ValueError("beta_schedule must be 'linear' or 'cosine'")
-
-        alphas = 1.0 - betas
-        alphas_cumprod = torch.cumprod(alphas, dim=0)
+        # Map our config to diffusers naming
+        schedule_name = "squaredcos_cap_v2" if beta_schedule == "cosine" else "linear"
+        self.scheduler = DDPMScheduler(num_train_timesteps=timesteps, beta_schedule=schedule_name)
+ torch.cumprod(alphas, dim=0)
         alphas_cumprod_prev = torch.cat([torch.tensor([1.0]), alphas_cumprod[:-1]], dim=0)
 
         self.register_buffer("betas", betas)
@@ -137,16 +117,10 @@ class Diffusion(nn.Module):
 
     @torch.no_grad()
     def p_sample(self, x_t, cond, t):
-        # Standard DDPM update but noise prediction comes from the wrapped 3D model
-        betas_t = self.betas[t].view(-1, 1, 1, 1)
-        sqrt_one_minus_alphas_cumprod_t = self.sqrt_one_minus_alphas_cumprod[t].view(-1, 1, 1, 1)
-        sqrt_recip_alphas_t = self.sqrt_recip_alphas[t].view(-1, 1, 1, 1)
-
-        eps_theta = self.model(x_t, cond, t)  # -> (B,1,H,W)
-        model_mean = sqrt_recip_alphas_t * (x_t - betas_t / sqrt_one_minus_alphas_cumprod_t * eps_theta)
-
-        if (t == 0).all():
-            return model_mean
+        # Predict noise and take one reverse-diffusion step via diffusers scheduler
+        eps_pred = self.model(x_t, cond, t)
+        out = self.scheduler.step(eps_pred, t, x_t)
+        return out.prev_sample
         else:
             posterior_var_t = self.posterior_variance[t].view(-1, 1, 1, 1)
             noise = torch.randn_like(x_t)
@@ -165,16 +139,18 @@ class Diffusion(nn.Module):
     def q_sample(self, x0, t, noise=None):
         if noise is None:
             noise = torch.randn_like(x0)
-        sqrt_a_bar = self.sqrt_alphas_cumprod[t].view(-1, 1, 1, 1)
-        sqrt_one_minus_a_bar = self.sqrt_one_minus_alphas_cumprod[t].view(-1, 1, 1, 1)
-        return sqrt_a_bar * x0 + sqrt_one_minus_a_bar * noise, noise
+        # diffusers expects timesteps shaped [B] on CPU or GPU equally fine
+        return self.scheduler.add_noise(x0, noise, t), noise
 
     def loss(self, x0, cond):
         B = x0.size(0)
+        # sample integer t in [0, T-1]
         t = torch.randint(0, self.T, (B,), device=x0.device).long()
-        x_t, noise = self.q_sample(x0, t)
+        noise = torch.randn_like(x0)
+        x_t = self.scheduler.add_noise(x0, noise, t)
         eps_pred = self.model(x_t, cond, t)
 
+        # latitude-weighted noise MSE
         if self.lat_weighted_loss:
             H = eps_pred.shape[-2]
             w = _latitude_weights(H, eps_pred.device).view(1, 1, H, 1)
@@ -182,9 +158,10 @@ class Diffusion(nn.Module):
         else:
             mse = F.mse_loss(eps_pred, noise)
 
-        sqrt_a_bar = self.sqrt_alphas_cumprod[t].view(-1, 1, 1, 1)
-        sqrt_one_minus_a_bar = self.sqrt_one_minus_alphas_cumprod[t].view(-1, 1, 1, 1)
-        x0_hat = (x_t - sqrt_one_minus_a_bar * eps_pred) / (sqrt_a_bar + 1e-8)
+        # reconstruct x0_hat using alpha_bar from scheduler
+        # scheduler stores alphas_cumprod as a buffer (torch tensor)
+        a_bar = self.scheduler.alphas_cumprod.to(x0.device)[t].view(-1,1,1,1)
+        x0_hat = (x_t - torch.sqrt(1 - a_bar) * eps_pred) / (torch.sqrt(a_bar) + 1e-8)
 
         mean_hat = _area_weighted_mean(x0_hat)
         mean_true = _area_weighted_mean(x0)

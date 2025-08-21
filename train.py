@@ -15,7 +15,6 @@ from torch.utils.data.distributed import DistributedSampler
 from scipy.ndimage import gaussian_filter
 import csv
 from collections import deque
-from ema_pytorch import EMA
 
 class LossLogger:
     def __init__(self, path, smooth=100):
@@ -195,7 +194,7 @@ def save_quad_with_saliency(
     truth_batch: torch.Tensor,  # (B,1,H,W)
     save_path: str,
     device: torch.device,
-    ema=None,
+
 ):
     """
     Saves a 4-pane image per item: [Condition | Truth | Prediction | Saliency]
@@ -206,27 +205,7 @@ def save_quad_with_saliency(
     B, _, H, W = cond.shape
 
     # Generate prediction (full sampler)
-    if ema is not None:
-        pred = _sample_with_ema(diffusion, ema, cond, device)
-    else:
-        pred = diff_mod.sample(cond, shape=(B, 1, H, W), device=device)
-    # --- global scale constraint at sampling ---
-    try:
-        target_mean = _area_weighted_mean(truth).detach() if truth is not None else _area_weighted_mean(cond).detach()
-        pred_mean = _area_weighted_mean(pred)
-        scale = (target_mean / (pred_mean + 1e-8)).view(-1,1,1,1)
-        pred = pred * scale
-    except Exception as e:
-        print(f"[warn] scale-adjust at sampling failed: {e}")
-    # --- global scale constraint at sampling ---
-    try:
-        # Prefer matching truth mean if available, else match cond mean
-        target_mean = _area_weighted_mean(truth).detach() if truth is not None else _area_weighted_mean(cond).detach()
-        pred_mean = _area_weighted_mean(pred)
-        scale = (target_mean / (pred_mean + 1e-8)).view(-1,1,1,1)
-        pred = pred * scale
-    except Exception as e:
-        print(f"[warn] scale-adjust at sampling failed: {e}")
+    pred = diff_mod.sample(cond, shape=(B, 1, H, W), device=device)
     print('save quad with')
     # Saliency requires grads; compute on a small subset (here same batch)
     # Detach copies to avoid autograd interaction with the sampled pred
@@ -373,8 +352,7 @@ def save_counterfactual_panels(
     save_path: str,
     device: torch.device,
     cf_cfg: dict | None = None,
-    data_cfg: dict | None = None,
-    ema=None,
+    data_cfg: dict | None = None
 ):
     """
     Save [Condition | Baseline | Counterfactual | Δ] panels (and Truth if provided).
@@ -398,7 +376,6 @@ def save_counterfactual_panels(
                 lat, lon = _read_lat_lon_from_file(data_cfg.get("cond_file"), lat_name=lat_name, lon_name=lon_name)
             mask = _box_mask_from_coords(lat, lon, region["lat_min"], region["lat_max"], region["lon_min"], region["lon_max"], device, H=H, W=W)
     print('generate output')
-    # For counterfactuals, sampling is inside counterfactual_delta(); here we won't inject EMA to keep runtime simple.
     out = counterfactual_delta(
         diffusion, cond,
         scale=cf_cfg.get("scale", 1.10),
@@ -464,7 +441,6 @@ def save_triptych_samples(
     truth_batch: torch.Tensor,  # (B,1,H,W)
     save_path: str,
     device: torch.device,
-    ema=None,
 ):
     """
     Saves a 3-pane image per item: [cond | truth | pred] with titles.
@@ -475,27 +451,7 @@ def save_triptych_samples(
     diff_mod = get_diff_mod(diffusion)
 
     B, _, H, W = cond.shape
-    if ema is not None:
-        pred = _sample_with_ema(diffusion, ema, cond, device)
-    else:
-        pred = diff_mod.sample(cond, shape=(B, 1, H, W), device=device)
-    # --- global scale constraint at sampling ---
-    try:
-        target_mean = _area_weighted_mean(truth).detach() if truth is not None else _area_weighted_mean(cond).detach()
-        pred_mean = _area_weighted_mean(pred)
-        scale = (target_mean / (pred_mean + 1e-8)).view(-1,1,1,1)
-        pred = pred * scale
-    except Exception as e:
-        print(f"[warn] scale-adjust at sampling failed: {e}")
-    # --- global scale constraint at sampling ---
-    try:
-        # Prefer matching truth mean if available, else match cond mean
-        target_mean = _area_weighted_mean(truth).detach() if truth is not None else _area_weighted_mean(cond).detach()
-        pred_mean = _area_weighted_mean(pred)
-        scale = (target_mean / (pred_mean + 1e-8)).view(-1,1,1,1)
-        pred = pred * scale
-    except Exception as e:
-        print(f"[warn] scale-adjust at sampling failed: {e}")
+    pred = diff_mod.sample(cond, shape=(B, 1, H, W), device=device)
 
     cond_v  = _minmax01(cond).cpu()
     truth_v = _minmax01(truth).cpu()
@@ -675,57 +631,6 @@ def build_model_from_config(cfg_unet: Dict[str, Any]) -> UNet:
         dropout=cfg_unet.get("dropout", 0.0),
     )
 
-
-def _build_ema_for_diffusion(diffusion, beta=0.9999, update_after_step=100, update_every=10):
-    """
-    Build EMA wrapper for the underlying UNet inside Diffusion.
-    Returns EMA instance and a function to fetch the (possibly DDP-unwrapped) UNet.
-    """
-    base = get_diff_mod(diffusion)  # DDP unwrap
-    if not hasattr(base, "model"):
-        raise AttributeError("Expected Diffusion to have .model (UNet).")
-    ema = EMA(
-        base.model,
-        beta=beta,
-        update_after_step=update_after_step,
-        update_every=update_every
-    )
-    # move to same device as the diffusion model
-    dev = next(base.parameters()).device
-    ema.to(dev)
-    return ema
-
-@torch.no_grad()
-def _sample_with_ema(diffusion, ema, cond_batch, device):
-    """
-    Temporarily swap EMA weights into the UNet for sampling, then restore.
-    """
-    base = get_diff_mod(diffusion)
-    unet = base.model
-    # stash current weights
-    orig = {k: v.clone() for k, v in unet.state_dict().items()}
-    try:
-        unet.load_state_dict(ema.ema_model.state_dict(), strict=False)
-        B, _, H, W = cond_batch.shape
-        return base.sample(cond_batch.to(device), shape=(B,1,H,W), device=device)
-    finally:
-        unet.load_state_dict(orig, strict=False)
-
-
-
-def _latitude_weights(height: int, device: torch.device):
-    # Latitude spans approx -90..90 mapped over height pixels; many Arctic grids use -90..90 or -80..80; cosine works regardless.
-    lat = torch.linspace(-90, 90, steps=height, device=device)
-    w = torch.cos(torch.deg2rad(lat)).clamp_min(0)  # avoid tiny negs from fp
-    w = w / w.mean()  # normalize to mean 1
-    return w  # shape [H]
-
-def _area_weighted_mean(tensor: torch.Tensor) -> torch.Tensor:
-    # tensor shape [B, C, H, W]
-    B, C, H, W = tensor.shape
-    w = _latitude_weights(H, tensor.device).view(1, 1, H, 1)
-    m = (tensor * w).mean(dim=(-2, -1))
-    return m  # [B, C]
 def get_diff_mod(model):
     from torch.nn.parallel import DistributedDataParallel as DDP
     return model.module if isinstance(model, DDP) else model
@@ -770,7 +675,6 @@ def train_one_epoch(
     use_amp: bool = True,
     epoch: int = 1,
     loss_logger=None,   # optional hook (rank0 only)
-    ema=None,           # optional EMA wrapper
 ):
     diffusion.train()
     diff_mod = get_diff_mod(diffusion)
@@ -797,7 +701,7 @@ def train_one_epoch(
 
         try:
             if use_amp:
-                with torch.amp.autocast('cuda'):#torch.cuda.amp.autocast():
+                with torch.cuda.amp.autocast():
                     loss = diff_mod.loss(x0, cond)
                 # catch non-finite loss early
                 if not torch.isfinite(loss):
@@ -811,8 +715,6 @@ def train_one_epoch(
 
                 scaler.step(optimizer)
                 scaler.update()
-                if ema is not None:
-                    ema.update()
             else:
                 loss = diff_mod.loss(x0, cond)
                 if not torch.isfinite(loss):
@@ -824,8 +726,6 @@ def train_one_epoch(
                     torch.nn.utils.clip_grad_norm_(diffusion.parameters(), max_grad_norm)
 
                 optimizer.step()
-                if ema is not None:
-                    ema.update()
             
         except Exception as e:
             # Print once, then bring all ranks down to avoid NCCL hangs
@@ -854,7 +754,6 @@ def load_checkpoint(
     diffusion,            # your Diffusion() instance
     optimizer=None,       # torch.optim.Optimizer or None
     scaler=None,          # GradScaler or None
-    ema=None,             # EMA or None
     device="cuda"
 ):
     ckpt = torch.load(ckpt_path, map_location=device)
@@ -884,15 +783,6 @@ def load_checkpoint(
     # 4) Load scaler (optional – only if you saved it)
     if scaler is not None and "scaler" in ckpt:
         scaler.load_state_dict(ckpt["scaler"])
-
-
-    # 5) Load EMA (optional)
-    if ema is not None and "ema" in ckpt:
-        try:
-            ema.load_state_dict(ckpt["ema"])
-            print("[Resume] EMA state loaded.")
-        except Exception as e:
-            print(f"[Resume] Warning: could not load EMA state: {e}")
 
     start_epoch = int(ckpt.get("epoch", 0)) + 1
     print(f"[Resume] Loaded {ckpt_path}. Resuming at epoch {start_epoch}.")
@@ -967,10 +857,6 @@ def main(config: Dict[str, Any]):
         diffusion = DDP(diffusion, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True)
 
     print('init optimizser')
-    print('ema init')
-    ema = _build_ema_for_diffusion(diffusion, beta=train_cfg.get("ema_beta", 0.9999), update_after_step=train_cfg.get("ema_warmup", 100), update_every=train_cfg.get("ema_update_every", 10))
-
-
     opt_cfg = train_cfg.get("optimizer", {})
     optimizer = torch.optim.AdamW(
         diffusion.parameters(),
@@ -996,7 +882,6 @@ def main(config: Dict[str, Any]):
             diffusion=diffusion,
             optimizer=optimizer,
             scaler=scaler,             # only matters if you saved it
-            ema=ema,
             device=device
         )
     for epoch in range(start_epoch, num_epochs + 1):
@@ -1011,7 +896,6 @@ def main(config: Dict[str, Any]):
             max_grad_norm=max_grad_norm,use_amp=train_cfg.get("use_amp", True),
             epoch=epoch,
             loss_logger=loss_logger if get_rank()==0 else None,
-            ema=ema,
         )
         rank0 = (get_rank() == 0)
         if rank0:
@@ -1034,7 +918,7 @@ def main(config: Dict[str, Any]):
             
             if config["train"].get("xai", {}).get("saliency", False):
                 quad_path = os.path.join(save_dir, "samples", f"epoch_{epoch:04d}_quad_xai.png")
-                save_quad_with_saliency(diffusion, cond_fix, truth_fix, quad_path, device, ema=ema)
+                save_quad_with_saliency(diffusion, cond_fix, truth_fix, quad_path, device)
                 print(f"Saved quad+saliency -> {quad_path}")
             
             if config["train"].get("xai", {}).get("counterfactual", False) :
@@ -1046,13 +930,12 @@ def main(config: Dict[str, Any]):
                 cf_path,
                 device,
                 cf_cfg=xai_cfg["counterfactual"],
-                data_cfg=data_cfg,
-                ema=ema
+                data_cfg=data_cfg
                 )
                 print(f"Saved cf -> {cf_path}")
             
             if not (config["train"].get("xai", {}).get("counterfactual", False) or config["train"].get("xai", {}).get("saliency", False)):
-                save_triptych_samples(diffusion, cond_fix, truth_fix, trip_path, device, ema=ema)
+                save_triptych_samples(diffusion, cond_fix, truth_fix, trip_path, device)
                 print(f"Saved triptych -> {trip_path}")
             
             
@@ -1068,7 +951,6 @@ def main(config: Dict[str, Any]):
                 "model": unet.state_dict(),
                 "diffusion_buffers": {k: v for k, v in diffusion.state_dict().items() if "model." not in k},
                 "optimizer": optimizer.state_dict(),
-                **({"ema": ema.state_dict()} if ema is not None else {}),
                 "config": config
             }, ckpt_path)
             print(f"Saved checkpoint -> {ckpt_path}")
@@ -1082,7 +964,6 @@ def main(config: Dict[str, Any]):
         "model": unet.state_dict(),
         "diffusion_buffers": {k: v for k, v in diffusion.state_dict().items() if "model." not in k},
         "optimizer": optimizer.state_dict(),
-                **({"ema": ema.state_dict()} if ema is not None else {}),
         "config": config
     }, final_path)
     print(f"Training done. Final checkpoint -> {final_path}")
@@ -1114,7 +995,7 @@ default_config = {
         "dropout": 0.0
     },
     "train": {
-        "resume": "runs/exp3/checkpoints/ckpt_epoch_0250.pt",
+        #"resume": "runs/exp3/checkpoints/ckpt_epoch_0100.pt",
         "xai": {
              "saliency": False,
              "counterfactual": {
@@ -1134,10 +1015,7 @@ default_config = {
         "batch_size": 10,
         "num_workers": 0,
         "timesteps": 1000,
-        "beta_schedule": "cosine",  # switched default to cosine per unet_trainer style
-        "ema_beta": 0.9999,
-        "ema_warmup": 100,
-        "ema_update_every": 10,
+        "beta_schedule": "linear",
         "optimizer": {
             "lr": 2e-4,
             "betas": [0.9, 0.999],
@@ -1147,8 +1025,8 @@ default_config = {
         "use_amp": True,
         "max_grad_norm": 1.0,
         "save_dir": "runs/exp3",
-        "save_every": 50,
-        "sample_every": 10,
+        "save_every": 10,
+        "sample_every": 100,
         "sample_batch": 10
     }
 }
