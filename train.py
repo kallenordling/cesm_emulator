@@ -1119,12 +1119,12 @@ default_config = {
     }
 }
 
-    # Close TensorBoard writer
-    try:
-        if get_rank()==0 and writer is not None:
-            writer.close()
-    except Exception:
-        pass
+# Close TensorBoard writer
+try:
+    if get_rank()==0 and writer is not None:
+        writer.close()
+except Exception:
+    pass
 
 if __name__ == "__main__":
     cfg = default_config
