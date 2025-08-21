@@ -14,8 +14,8 @@ def calcmean(ds):
 import xarray as xr
 from inference import predict_temperature_from_emissions
 
-CKPT = "runs/exp3/checkpoints/ckpt_epoch_0200.pt"
-COND = "co2_final.nc"                 # your emissions file
+CKPT = "runs/exp3/checkpoints/ckpt_epoch_0010.pt"
+COND = "../CESM2-LESN_emulator/co2_final.nc"                 # your emissions file
 COND_VAR = "CO2_em_anthro"
 YEAR = 2010                           # <- pick the year you want
 TMP = "cond_year.nc"        # temp file for the one-year subset
