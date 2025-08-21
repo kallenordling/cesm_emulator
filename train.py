@@ -787,7 +787,7 @@ def train_one_epoch(
 
         try:
             if use_amp:
-                with torch.cuda.amp.autocast():
+                with torch.amp.autocast('cuda'):
                     loss = diff_mod.loss(x0, cond)
                 # catch non-finite loss early
                 if not torch.isfinite(loss):
