@@ -36,6 +36,26 @@ class LossLogger:
     def close(self):
         self.fh.close()
 
+
+class MetricsLogger:
+    def __init__(self, path):
+        self.path = path
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        self._fh = open(path, "a", newline="")
+        self._w = csv.writer(self._fh)
+        if os.stat(path).st_size == 0:
+            self._w.writerow(["epoch","pattern_corr","centered_rmse","mean_bias","scale_factor","amp_ratio"])
+    def write(self, epoch, m: dict):
+        self._w.writerow([epoch, float(m["pattern_corr"]), float(m["centered_rmse"]), float(m["mean_bias"]), float(m["scale_factor"]), float(m["amp_ratio"])])
+        self._fh.flush()
+    def close(self):
+        try:
+            self._fh.close()
+        except Exception:
+            pass
+
+
+
 try:
     from torchvision.utils import save_image
     _HAS_TV = True
@@ -1003,6 +1023,35 @@ def main(config: Dict[str, Any]):
             print("path",trip_path)
             save_triptych_samples(diffusion, cond_fix, truth_fix, trip_path, device)
             print(f"Saved triptych -> {trip_path}")
+            # ---- Compute and log spatial & magnitude metrics on fixed preview ----
+            with torch.no_grad():
+                diff_mod = get_diff_mod(diffusion)
+                B,_,H,W = cond_fix.shape
+                pred_fix = diff_mod.sample(cond_fix.to(device), shape=(B,1,H,W), device=device)
+                try:
+                    target_mean = _area_weighted_mean(truth_fix.to(device)).detach()
+                    pred_mean = _area_weighted_mean(pred_fix)
+                    scale = (target_mean / (pred_mean + 1e-8)).view(-1,1,1,1)
+                    pred_fix = pred_fix * scale
+                except Exception:
+                    pass
+                m = {
+                    'pattern_corr': metric_pattern_corr(pred_fix, truth_fix.to(device)),
+                    'centered_rmse': metric_centered_rmse(pred_fix, truth_fix.to(device)),
+                    'mean_bias': metric_mean_bias(pred_fix, truth_fix.to(device)),
+                    'scale_factor': metric_scale_factor(pred_fix, truth_fix.to(device)),
+                    'amp_ratio': metric_amplitude_ratio(pred_fix, truth_fix.to(device)),
+                }
+                if metrics_logger is not None:
+                    metrics_logger.write(epoch, m)
+                if writer is not None:
+                    writer.add_scalar('metrics/pattern_corr', float(m['pattern_corr']), epoch)
+                    writer.add_scalar('metrics/centered_rmse', float(m['centered_rmse']), epoch)
+                    writer.add_scalar('metrics/mean_bias', float(m['mean_bias']), epoch)
+                    writer.add_scalar('metrics/scale_factor', float(m['scale_factor']), epoch)
+                    writer.add_scalar('metrics/amp_ratio', float(m['amp_ratio']), epoch)
+            if writer is not None:
+                _tb_add_image(writer, 'samples/triptych', trip_path, epoch)
             '''
             if config["train"].get("xai", {}).get("saliency", False):
                 quad_path = os.path.join(save_dir, "samples", f"epoch_{epoch:04d}_quad_xai.png")
@@ -1133,21 +1182,3 @@ if __name__ == "__main__":
     #     cfg = json.load(f)
     main(cfg)
 
-
-
-class MetricsLogger:
-    def __init__(self, path):
-        self.path = path
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        self._fh = open(path, "a", newline="")
-        self._w = csv.writer(self._fh)
-        if os.stat(path).st_size == 0:
-            self._w.writerow(["epoch","pattern_corr","centered_rmse","mean_bias","scale_factor","amp_ratio"])
-    def write(self, epoch, m: dict):
-        self._w.writerow([epoch, float(m["pattern_corr"]), float(m["centered_rmse"]), float(m["mean_bias"]), float(m["scale_factor"]), float(m["amp_ratio"])])
-        self._fh.flush()
-    def close(self):
-        try:
-            self._fh.close()
-        except Exception:
-            pass
