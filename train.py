@@ -484,90 +484,55 @@ def save_triptych_samples(
     return_tensor: bool = False,
 ):
     """
-    Fast triptych: [cond | truth | pred] per sample, assembled as a single grid image.
-
-    - Uses DDIM sampling when `steps` < T (fast).
-    - If EMA is provided, temporarily swaps the diffusion.model reference to ema.ema_model
-      (no state_dict copies) for sampling, then swaps back.
-    - Writes a single PNG; optionally returns a TensorBoard-friendly image tensor.
+    Saves a 3-pane image per item: [cond | truth | pred] with titles.
     """
     diffusion.eval()
-    cond  = cond_batch.to(device, non_blocking=True)
-    truth = truth_batch.to(device, non_blocking=True)
-    diff_mod = get_diff_mod(diffusion)   # unwrap DDP -> Diffusion
+    cond = cond_batch.to(device)
+    truth = truth_batch.to(device)
+    diff_mod = get_diff_mod(diffusion)
 
     B, _, H, W = cond.shape
+    pred = _sample_compat(diff_mod, cond, B, H, W, device)
 
-    # --- sample prediction (fast path) ---
-    # quick EMA swap without copying weights
-    def _sample_with_optional_ema():
-        if ema is None:
-            return diff_mod.sample(cond, shape=(B, 1, H, W), device=device, steps=steps, ddim_eta=ddim_eta)
+    cond_v  = _minmax01(cond).cpu()
+    truth_v = _minmax01(truth).cpu()
+    pred_v  = _minmax01(pred).cpu()
 
-        # Temporarily swap the underlying UNet wrapper (diff_mod.model) to ema.ema_model
-        original_model_ref = diff_mod.model
-        try:
-            diff_mod.model = ema.ema_model  # swap reference
-            return diff_mod.sample(cond, shape=(B, 1, H, W), device=device, steps=steps, ddim_eta=ddim_eta)
-        finally:
-            diff_mod.model = original_model_ref  # restore
+    panels = []
+    titles = ["Condition", "Truth", "Prediction"]
 
-    with torch.inference_mode():
-        pred = _sample_with_optional_ema()
+    for i in range(B):
+        # Convert each panel to PIL
+        imgs = [TF.to_pil_image(cond_v[i]),
+                TF.to_pil_image(truth_v[i]),
+                TF.to_pil_image(pred_v[i])]
+        # Add titles
+        titled_imgs = []
+        for img, title in zip(imgs, titles):
+            img_with_title = Image.new("RGB", (img.width, img.height + 20), color=(255, 255, 255))
+            img_with_title.paste(img, (0, 20))
+            draw = ImageDraw.Draw(img_with_title)
+            draw.text((5, 0), title, fill=(0, 0, 0))
+            titled_imgs.append(img_with_title)
+        # Concatenate horizontally
+        total_width = sum(im.width for im in titled_imgs)
+        concat_img = Image.new("RGB", (total_width, titled_imgs[0].height))
+        x_off = 0
+        for im in titled_imgs:
+            concat_img.paste(im, (x_off, 0))
+            x_off += im.width
+        panels.append(concat_img)
 
-    # --- optional global-scale adjustment (match area-weighted mean) ---
-    try:
-        target_mean = _area_weighted_mean(truth).detach()
-        pred_mean   = _area_weighted_mean(pred)
-        scale = (target_mean / (pred_mean + 1e-8)).view(-1, 1, 1, 1)
-        pred = pred * scale
-    except Exception as e:
-        print(f"[warn] triptych scale-adjust failed: {e}")
+    # Save multiple images in a grid
+    grid_width = max(img.width for img in panels)
+    grid_height = sum(img.height for img in panels)
+    grid_img = Image.new("RGB", (grid_width, grid_height), (255, 255, 255))
+    y_off = 0
+    for img in panels:
+        grid_img.paste(img, (0, y_off))
+        y_off += img.height
 
-    # --- Build a grid [cond | truth | pred] for each sample, stacked vertically ---
-    # Normalize each map to [0,1] for visualization
-    cond_v  = _minmax01_np(cond).cpu()
-    truth_v = _minmax01_np(truth).cpu()
-    pred_v  = _minmax01_np(pred).cpu()
-
-    # Interleave C, T, P for each item: [c0,t0,p0,c1,t1,p1,...] -> shape (3B,1,H,W)
-    imgs = torch.empty((3 * B, 1, H, W), dtype=cond_v.dtype)
-    imgs[0::3] = cond_v
-    imgs[1::3] = truth_v
-    imgs[2::3] = pred_v
-
-    # Try fast path with torchvision; else fallback to NumPy/PIL
-    if _HAS_TV:
-        try:
-            from torchvision.utils import make_grid, save_image
-            grid = make_grid(imgs, nrow=3)  # [3B,1,H,W] -> [1,H,3W] tiled per row
-            save_image(grid, save_path)     # single PNG
-            tb_grid = grid  # already [C,H,W] in [0,1]
-        except Exception as e:
-            print(f"[warn] torchvision save failed ({e}); using PIL fallback")
-            _HAS_TV_local = False
-        else:
-            # return if requested
-            return (save_path, tb_grid) if return_tensor else save_path
-    # Fallback (no torchvision or failed)
-    try:
-        import numpy as np
-        from PIL import Image
-        # Build rows of [cond|truth|pred] for each sample, then stack rows vertically
-        rows = []
-        for i in range(B):
-            row = torch.cat([imgs[3*i + j] for j in range(3)], dim=-1)[0]   # (H, 3W)
-            rows.append(row)
-        big = torch.cat(rows, dim=-2)  # (B*H, 3W)
-        big_np = (big.clamp(0, 1).numpy() * 255.0).astype(np.uint8)
-        Image.fromarray(big_np).save(save_path)
-        # TB grid as [1, H_total, W_total]
-        tb_grid = big.unsqueeze(0)
-    except Exception as e:
-        print(f"[error] PIL fallback failed: {e}")
-        return save_path
-
-    return (save_path, tb_grid) if return_tensor else save_path
+    grid_img.save(save_path)
 
 def _ensure_hw_like(da: xr.DataArray, expect_leading: int,
                     y_name: str | None, x_name: str | None,
@@ -708,6 +673,14 @@ def build_model_from_config(cfg_unet: Dict[str, Any]) -> UNet:
     )
 
 def get_diff_mod(model):
+
+def _sample_compat(diff_mod, cond, B, H, W, device, steps=None, ddim_eta=0.0):
+    """Call Diffusion.sample with steps if supported; otherwise fall back to legacy signature."""
+    try:
+        return diff_mod.sample(cond, shape=(B,1,H,W), device=device, steps=steps, ddim_eta=ddim_eta)
+    except TypeError:
+        # older model without steps/ddim_eta
+        return diff_mod.sample(cond, shape=(B,1,H,W), device=device)
     from torch.nn.parallel import DistributedDataParallel as DDP
     return model.module if isinstance(model, DDP) else model
 '''
@@ -1187,4 +1160,3 @@ if __name__ == "__main__":
     # with open("config.json") as f:
     #     cfg = json.load(f)
     main(cfg)
-
