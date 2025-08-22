@@ -15,8 +15,8 @@ print("#### PREDICTED #####")
 print(temp_p.isel(member_id=0))
 
 
-emiss= xr.open_dataset("../CESM2-LESN_emulator/co2_final.nc")['CO2_em_anthro'].mean('member_id').sum(['lat','lon'])
-temp = xr.open_dataset('../CESM2-LESN_emulator/splits/fold_1/climate_data_train_fold1.nc')["TREFHT"].mean('member_id')
+emiss= xr.open_dataset("../CESM2-LESN_emulator/co2_final.nc")['CO2_em_anthro'].isel(member_id=0).sum(['lat','lon'])
+temp = xr.open_dataset('../CESM2-LESN_emulator/splits/fold_1/climate_data_train_fold1.nc')["TREFHT"].isel(member_id=0)
 temp = calcmean(temp)
 temp = temp - temp.sel(year=slice(1850,1900)).mean('year')
 print("#### emiss #####")
