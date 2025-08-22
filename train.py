@@ -1021,7 +1021,7 @@ def main(config: Dict[str, Any]):
             cond_fix, truth_fix = fixed_preview
             trip_path = os.path.join(save_dir, "samples", f"epoch_{epoch:04d}_triptych.png")
             print("path",trip_path)
-            save_triptych_samples(diffusion, cond_fix, truth_fix, trip_path, device)
+            #save_triptych_samples(diffusion, cond_fix, truth_fix, trip_path, device)
             print(f"Saved triptych -> {trip_path}")
             # ---- Compute and log spatial & magnitude metrics on fixed preview ----
             with torch.no_grad():
@@ -1132,7 +1132,7 @@ default_config = {
         "dropout": 0.0
     },
     "train": {
-        "resume": "runs/exp3/checkpoints/ckpt_epoch_0020.pt",
+        "resume": "runs/exp3/checkpoints/ckpt_epoch_0100.pt",
         "xai": {
              "saliency": False,
              "counterfactual": {
@@ -1163,7 +1163,7 @@ default_config = {
         "max_grad_norm": 1.0,
         "save_dir": "runs/exp3",
         "save_every": 10,
-        "sample_every": 100,
+        "sample_every": 10,
         "sample_batch": 10
     }
 }
