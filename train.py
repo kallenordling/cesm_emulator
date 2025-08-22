@@ -846,8 +846,8 @@ def train_one_epoch(
         total += float(loss.detach().item())
         steps += 1
 
-        if loss_logger is not None:
-            loss_logger.log(epoch, step, float(loss.detach().item()))
+        #if loss_logger is not None:
+        #    loss_logger.log(epoch, step, float(loss.detach().item()))
 
     return total / max(1, steps)
 
