@@ -1021,7 +1021,7 @@ def main(config: Dict[str, Any]):
             cond_fix, truth_fix = fixed_preview
             trip_path = os.path.join(save_dir, "samples", f"epoch_{epoch:04d}_triptych.png")
             print("path",trip_path)
-            
+            '''
             if config["train"].get("xai", {}).get("saliency", False):
                 quad_path = os.path.join(save_dir, "samples", f"epoch_{epoch:04d}_quad_xai.png")
                 out_path, tb_img = save_quad_with_saliency(diffusion, cond_fix, truth_fix, quad_path, device, return_tensor=True)
@@ -1041,12 +1041,12 @@ def main(config: Dict[str, Any]):
                 data_cfg=data_cfg
                 )
                 print(f"Saved cf -> {cf_path}")
-            
-            if not (config["train"].get("xai", {}).get("counterfactual", False) or config["train"].get("xai", {}).get("saliency", False)):
-                out_path, tb_img = save_triptych_samples(diffusion, cond_fix, truth_fix, trip_path, device, return_tensor=True)
-                if tb_writer is not None:
+            '''
+            #if not (config["train"].get("xai", {}).get("counterfactual", False) or config["train"].get("xai", {}).get("saliency", False)):
+            out_path, tb_img = save_triptych_samples(diffusion, cond_fix, truth_fix, trip_path, device, return_tensor=True)
+            if tb_writer is not None:
                     tb_writer.add_image('preview/triptych', tb_img, global_step=epoch)
-                print(f"Saved triptych -> {trip_path}")
+            print(f"Saved triptych -> {trip_path}")
             
             
             
