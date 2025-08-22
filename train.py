@@ -35,20 +35,6 @@ class LossLogger:
 
     def close(self):
         self.fh.close()
-class MetricLogger:
-    def __init__(self, path, smooth=100):
-        self.path = path
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        self.fh = open(path, "a", newline="")
-        self.writer = csv.writer(self.fh)
-        self.buf_total = deque(maxlen=smooth)
-        if os.stat(path).st_size == 0:
-            self.writer.writerow(["epoch","step","mse_raw","mse_lat","cond_loss","total","total_smooth"])
-    def log(self, epoch, step, mse_raw, mse_lat, cond_loss, total):
-        self.buf_total.append(float(total))
-        sm = sum(self.buf_total) / len(self.buf_total)
-        self.writer.writerow([epoch, step, float(mse_raw), float(mse_lat), float(cond_loss), float(total), sm])
-        self.fh.flush()
 
 try:
     from torchvision.utils import save_image
@@ -75,7 +61,7 @@ def counterfactual_delta(diff_mod, cond,scale_mask=None, scale=1.1, steps=None):
         steps = diff_mod.T  # full sampling
 
     # baseline
-    base = diff_mod.sample(cond, shape=(B,1,H,W), device=device, steps=steps, ddim_eta=ddim_eta)
+    base = diff_mod.sample(cond, shape=(B,1,H,W), device=device)
 
     # perturbed cond
     cond2 = cond.clone()
@@ -220,7 +206,7 @@ def save_quad_with_saliency(
     B, _, H, W = cond.shape
 
     # Generate prediction (full sampler)
-    pred = diff_mod.sample(cond, shape=(B, 1, H, W), device=device, steps=train_cfg.get("sample_steps", 50), ddim_eta=train_cfg.get("ddim_eta", 0.0))
+    pred = diff_mod.sample(cond, shape=(B, 1, H, W), device=device)
     print('save quad with')
     # Saliency requires grads; compute on a small subset (here same batch)
     # Detach copies to avoid autograd interaction with the sampled pred
@@ -397,8 +383,6 @@ def save_counterfactual_panels(
         mask=mask,
         n_samples=int(cf_cfg.get("n_samples", 1)),
         seed=cf_cfg.get("seed", None),
-        steps=steps,
-        ddim_eta=ddim_eta,
     )
     print('prepare panels')
     # Prepare panes
@@ -468,7 +452,7 @@ def save_triptych_samples(
     diff_mod = get_diff_mod(diffusion)
 
     B, _, H, W = cond.shape
-    pred = diff_mod.sample(cond, shape=(B, 1, H, W), device=device, steps=train_cfg.get("sample_steps", 50), ddim_eta=train_cfg.get("ddim_eta", 0.0))
+    pred = diff_mod.sample(cond, shape=(B, 1, H, W), device=device)
 
     cond_v  = _minmax01(cond).cpu()
     truth_v = _minmax01(truth).cpu()
@@ -652,7 +636,19 @@ def get_diff_mod(model):
     from torch.nn.parallel import DistributedDataParallel as DDP
     return model.module if isinstance(model, DDP) else model
 '''
-def train_one_epoch(diffusion, dl, optimizer, device, scaler, max_grad_norm=1.0, use_amp=True):
+def train_one_epoch(
+    diffusion,
+    dl,
+    optimizer,
+    device,
+    scaler,
+    max_grad_norm: float = 1.0,
+    use_amp: bool = True,
+    epoch: int = 1,
+    metric_logger=None,
+    tb_writer=None,
+    ema=None,
+):
     diffusion.train()
     running = 0.0
     diff_mod = get_diff_mod(diffusion)
@@ -663,7 +659,7 @@ def train_one_epoch(diffusion, dl, optimizer, device, scaler, max_grad_norm=1.0,
 
         optimizer.zero_grad(set_to_none=True)
         if use_amp:
-            with torch.cuda.amp.autocast():
+            with torch.amp.autocast('cuda'):
                 loss = diff_mod.loss(x0, cond)
             scaler.scale(loss).backward()
             if max_grad_norm is not None:
@@ -671,6 +667,19 @@ def train_one_epoch(diffusion, dl, optimizer, device, scaler, max_grad_norm=1.0,
                 nn.utils.clip_grad_norm_(diffusion.parameters(), max_grad_norm)
             scaler.step(optimizer)
             scaler.update()
+                if ema is not None:
+                    ema.update()
+                if metric_logger is not None and 'comps' in locals():
+                    try:
+                        metric_logger.log(epoch, steps, comps.get('mse_raw', loss).item(), comps.get('mse_lat', loss).item(), comps.get('cond_loss', 0.0).item(), loss.item())
+                        if tb_writer is not None:
+                            gs = (epoch-1) * len(dl) + steps
+                            tb_writer.add_scalar('loss/mse_raw', comps.get('mse_raw', loss).item(), gs)
+                            tb_writer.add_scalar('loss/mse_lat', comps.get('mse_lat', loss).item(), gs)
+                            tb_writer.add_scalar('loss/cond_loss', comps.get('cond_loss', 0.0).item(), gs)
+                            tb_writer.add_scalar('loss/total', loss.item(), gs)
+                    except Exception:
+                        pass
         else:
             loss = diffusion.loss(x0, cond)
             loss.backward()
@@ -691,7 +700,9 @@ def train_one_epoch(
     max_grad_norm: float = 1.0,
     use_amp: bool = True,
     epoch: int = 1,
-    loss_logger=None,   # optional hook (rank0 only)
+    metric_logger=None,
+    tb_writer=None,
+    ema=None,
 ):
     diffusion.train()
     diff_mod = get_diff_mod(diffusion)
@@ -718,9 +729,8 @@ def train_one_epoch(
 
         try:
             if use_amp:
-                with torch.cuda.amp.autocast():
-                    comps = diff_mod.loss_components(x0, cond)
-                    loss = comps['total']
+                with torch.amp.autocast('cuda'):
+                    loss = diff_mod.loss(x0, cond)
                 # catch non-finite loss early
                 if not torch.isfinite(loss):
                     raise RuntimeError(f"Non-finite loss at epoch {epoch} step {step}: {loss.item()}")
@@ -733,9 +743,21 @@ def train_one_epoch(
 
                 scaler.step(optimizer)
                 scaler.update()
+                if ema is not None:
+                    ema.update()
+                if metric_logger is not None and 'comps' in locals():
+                    try:
+                        metric_logger.log(epoch, steps, comps.get('mse_raw', loss).item(), comps.get('mse_lat', loss).item(), comps.get('cond_loss', 0.0).item(), loss.item())
+                        if tb_writer is not None:
+                            gs = (epoch-1) * len(dl) + steps
+                            tb_writer.add_scalar('loss/mse_raw', comps.get('mse_raw', loss).item(), gs)
+                            tb_writer.add_scalar('loss/mse_lat', comps.get('mse_lat', loss).item(), gs)
+                            tb_writer.add_scalar('loss/cond_loss', comps.get('cond_loss', 0.0).item(), gs)
+                            tb_writer.add_scalar('loss/total', loss.item(), gs)
+                    except Exception:
+                        pass
             else:
-                comps = diff_mod.loss_components(x0, cond)
-                loss = comps['total']
+                loss = diff_mod.loss(x0, cond)
                 if not torch.isfinite(loss):
                     raise RuntimeError(f"Non-finite loss at epoch {epoch} step {step}: {loss.item()}")
 
@@ -821,9 +843,6 @@ def main(config: Dict[str, Any]):
     os.makedirs(save_dir, exist_ok=True)
     os.makedirs(os.path.join(save_dir, "samples"), exist_ok=True)
     os.makedirs(os.path.join(save_dir, "checkpoints"), exist_ok=True)
-
-    # TensorBoard writer (rank0 only)
-    tb_writer = SummaryWriter(log_dir=os.path.join(save_dir, "tb")) if get_rank()==0 else None
 
     cond_np, tgt_np,times_ids = load_cond_and_target(
         cond_file=data_cfg["cond_file"],
@@ -918,6 +937,7 @@ def main(config: Dict[str, Any]):
             max_grad_norm=max_grad_norm,use_amp=train_cfg.get("use_amp", True),
             epoch=epoch,
             metric_logger=metric_logger if get_rank()==0 else None,
+            tb_writer=tb_writer if get_rank()==0 else None,
         )
         rank0 = (get_rank() == 0)
         if rank0:
@@ -937,6 +957,7 @@ def main(config: Dict[str, Any]):
             cond_fix, truth_fix = fixed_preview
             trip_path = os.path.join(save_dir, "samples", f"epoch_{epoch:04d}_triptych.png")
             print("path",trip_path)
+            
             if config["train"].get("xai", {}).get("saliency", False):
                 quad_path = os.path.join(save_dir, "samples", f"epoch_{epoch:04d}_quad_xai.png")
                 save_quad_with_saliency(diffusion, cond_fix, truth_fix, quad_path, device)
@@ -994,9 +1015,9 @@ def main(config: Dict[str, Any]):
     
 default_config = {
     "data": {
-        "cond_file":  "../CESM2-LESN_emulator/co2_final.nc",
+        "cond_file":  "co2_final.nc",
         "cond_var":   "CO2_em_anthro",
-        "target_file":"../CESM2-LESN_emulator/splits/fold_1/climate_data_train_fold1.nc",
+        "target_file":"splits/fold_1/climate_data_train_fold1.nc",
         "target_var": "TREFHT",
         "stack_dim":  "year",
         "member_dim": "member_id",
@@ -1016,7 +1037,7 @@ default_config = {
         "dropout": 0.0
     },
     "train": {
-        "resume": "runs/exp3/checkpoints/ckpt_epoch_0100.pt",
+        #"resume": "runs/exp3/checkpoints/ckpt_epoch_0100.pt",
         "xai": {
              "saliency": False,
              "counterfactual": {
@@ -1058,3 +1079,21 @@ if __name__ == "__main__":
     # with open("config.json") as f:
     #     cfg = json.load(f)
     main(cfg)
+
+class MetricLogger:
+    def __init__(self, path, smooth=100):
+        self.path = path
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        self.fh = open(path, "a", newline="")
+        self.writer = csv.writer(self.fh)
+        self.buf_total = deque(maxlen=smooth)
+        if os.path.exists(path) and os.stat(path).st_size == 0:
+            self.writer.writerow(["epoch","step","mse_raw","mse_lat","cond_loss","total","total_smooth"])
+        elif not os.path.exists(path):
+            self.writer.writerow(["epoch","step","mse_raw","mse_lat","cond_loss","total","total_smooth"])
+
+    def log(self, epoch, step, mse_raw, mse_lat, cond_loss, total):
+        self.buf_total.append(float(total))
+        sm = sum(self.buf_total) / len(self.buf_total)
+        self.writer.writerow([epoch, step, float(mse_raw), float(mse_lat), float(cond_loss), float(total), sm])
+        self.fh.flush()
