@@ -35,26 +35,20 @@ class LossLogger:
 
     def close(self):
         self.fh.close()
-
-
-class MetricsLogger:
-    def __init__(self, path):
+class MetricLogger:
+    def __init__(self, path, smooth=100):
         self.path = path
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        self._fh = open(path, "a", newline="")
-        self._w = csv.writer(self._fh)
+        self.fh = open(path, "a", newline="")
+        self.writer = csv.writer(self.fh)
+        self.buf_total = deque(maxlen=smooth)
         if os.stat(path).st_size == 0:
-            self._w.writerow(["epoch","pattern_corr","centered_rmse","mean_bias","scale_factor","amp_ratio"])
-    def write(self, epoch, m: dict):
-        self._w.writerow([epoch, float(m["pattern_corr"]), float(m["centered_rmse"]), float(m["mean_bias"]), float(m["scale_factor"]), float(m["amp_ratio"])])
-        self._fh.flush()
-    def close(self):
-        try:
-            self._fh.close()
-        except Exception:
-            pass
-
-
+            self.writer.writerow(["epoch","step","mse_raw","mse_lat","cond_loss","total","total_smooth"])
+    def log(self, epoch, step, mse_raw, mse_lat, cond_loss, total):
+        self.buf_total.append(float(total))
+        sm = sum(self.buf_total) / len(self.buf_total)
+        self.writer.writerow([epoch, step, float(mse_raw), float(mse_lat), float(cond_loss), float(total), sm])
+        self.fh.flush()
 
 try:
     from torchvision.utils import save_image
@@ -64,16 +58,6 @@ except Exception:
 
 from model import UNet, Diffusion
 from dataset_single_member import SingleMemberDataset, AllMembersDataset
-
-@torch.no_grad()
-
-def _tb_add_image(writer, tag, path, epoch):
-    try:
-        img = Image.open(path).convert("RGB")
-        img_t = TF.to_tensor(img)  # [3,H,W], 0..1
-        writer.add_image(tag, img_t, epoch)
-    except Exception as e:
-        print(f"[TB] Could not log image {path}: {e}")
 
 @torch.no_grad()
 def pick_mid_t(T):  # choose a representative diffusion step
@@ -91,7 +75,7 @@ def counterfactual_delta(diff_mod, cond,scale_mask=None, scale=1.1, steps=None):
         steps = diff_mod.T  # full sampling
 
     # baseline
-    base = diff_mod.sample(cond, shape=(B,1,H,W), device=device)
+    base = diff_mod.sample(cond, shape=(B,1,H,W), device=device, steps=steps, ddim_eta=ddim_eta)
 
     # perturbed cond
     cond2 = cond.clone()
@@ -236,7 +220,7 @@ def save_quad_with_saliency(
     B, _, H, W = cond.shape
 
     # Generate prediction (full sampler)
-    pred = diff_mod.sample(cond, shape=(B, 1, H, W), device=device)
+    pred = diff_mod.sample(cond, shape=(B, 1, H, W), device=device, steps=train_cfg.get("sample_steps", 50), ddim_eta=train_cfg.get("ddim_eta", 0.0))
     print('save quad with')
     # Saliency requires grads; compute on a small subset (here same batch)
     # Detach copies to avoid autograd interaction with the sampled pred
@@ -413,6 +397,8 @@ def save_counterfactual_panels(
         mask=mask,
         n_samples=int(cf_cfg.get("n_samples", 1)),
         seed=cf_cfg.get("seed", None),
+        steps=steps,
+        ddim_eta=ddim_eta,
     )
     print('prepare panels')
     # Prepare panes
@@ -482,7 +468,7 @@ def save_triptych_samples(
     diff_mod = get_diff_mod(diffusion)
 
     B, _, H, W = cond.shape
-    pred = diff_mod.sample(cond, shape=(B, 1, H, W), device=device)
+    pred = diff_mod.sample(cond, shape=(B, 1, H, W), device=device, steps=train_cfg.get("sample_steps", 50), ddim_eta=train_cfg.get("ddim_eta", 0.0))
 
     cond_v  = _minmax01(cond).cpu()
     truth_v = _minmax01(truth).cpu()
@@ -662,61 +648,6 @@ def build_model_from_config(cfg_unet: Dict[str, Any]) -> UNet:
         dropout=cfg_unet.get("dropout", 0.0),
     )
 
-
-# ---- Metrics helpers: spatial pattern & magnitude ----
-def _lat_weights(H: int, device: torch.device):
-    lat = torch.linspace(-90, 90, steps=H, device=device)
-    w = torch.cos(torch.deg2rad(lat)).clamp_min(0)
-    return w / (w.mean() + 1e-8)
-
-def _area_weighted_mean(x: torch.Tensor) -> torch.Tensor:
-    # x: [B, C, H, W]
-    w = _lat_weights(x.shape[-2], x.device).view(1, 1, -1, 1)
-    return (x * w).mean(dim=(-2, -1), keepdim=True)  # [B,C,1,1]
-
-def _spatial_anomaly(x: torch.Tensor) -> torch.Tensor:
-    return x - _area_weighted_mean(x)
-
-def metric_pattern_corr(pred: torch.Tensor, truth: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
-    # Pearson r over HxW using area weights, averaged over batch
-    p = _spatial_anomaly(pred)
-    t = _spatial_anomaly(truth)
-    w = _lat_weights(p.shape[-2], p.device).view(1,1,-1,1)
-    pw = (p * w).reshape(p.shape[0], -1)
-    tw = (t * w).reshape(t.shape[0], -1)
-    num = (pw * tw).sum(-1)
-    den = torch.sqrt((pw.pow(2).sum(-1) * tw.pow(2).sum(-1)) + eps)
-    r = num / (den + eps)
-    return r.mean()
-
-def metric_centered_rmse(pred: torch.Tensor, truth: torch.Tensor) -> torch.Tensor:
-    p = _spatial_anomaly(pred)
-    t = _spatial_anomaly(truth)
-    w = _lat_weights(p.shape[-2], p.device).view(1,1,-1,1)
-    err2 = ((p - t).pow(2) * w).mean(dim=(-2,-1))
-    return torch.sqrt(err2.mean())
-
-def metric_mean_bias(pred: torch.Tensor, truth: torch.Tensor) -> torch.Tensor:
-    return (_area_weighted_mean(pred) - _area_weighted_mean(truth)).mean()
-
-def metric_scale_factor(pred: torch.Tensor, truth: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
-    w = _lat_weights(pred.shape[-2], pred.device).view(1,1,-1,1)
-    pw = (pred * w).reshape(pred.shape[0], -1)
-    tw = (truth * w).reshape(truth.shape[0], -1)
-    num = (pw * tw).sum(-1)
-    den = (pw.pow(2).sum(-1) + eps)
-    s = num / den
-    return s.mean()
-
-def metric_amplitude_ratio(pred: torch.Tensor, truth: torch.Tensor) -> torch.Tensor:
-    p = _spatial_anomaly(pred)
-    t = _spatial_anomaly(truth)
-    w = _lat_weights(p.shape[-2], p.device).view(1,1,-1,1)
-    sp = torch.sqrt(((p.pow(2)) * w).mean(dim=(-2,-1)).mean())
-    st = torch.sqrt(((t.pow(2)) * w).mean(dim=(-2,-1)).mean())
-    return sp / (st + 1e-8)
-
-
 def get_diff_mod(model):
     from torch.nn.parallel import DistributedDataParallel as DDP
     return model.module if isinstance(model, DDP) else model
@@ -787,8 +718,9 @@ def train_one_epoch(
 
         try:
             if use_amp:
-                with torch.amp.autocast('cuda'):
-                    loss = diff_mod.loss(x0, cond)
+                with torch.cuda.amp.autocast():
+                    comps = diff_mod.loss_components(x0, cond)
+                    loss = comps['total']
                 # catch non-finite loss early
                 if not torch.isfinite(loss):
                     raise RuntimeError(f"Non-finite loss at epoch {epoch} step {step}: {loss.item()}")
@@ -802,7 +734,8 @@ def train_one_epoch(
                 scaler.step(optimizer)
                 scaler.update()
             else:
-                loss = diff_mod.loss(x0, cond)
+                comps = diff_mod.loss_components(x0, cond)
+                loss = comps['total']
                 if not torch.isfinite(loss):
                     raise RuntimeError(f"Non-finite loss at epoch {epoch} step {step}: {loss.item()}")
 
@@ -888,12 +821,9 @@ def main(config: Dict[str, Any]):
     os.makedirs(save_dir, exist_ok=True)
     os.makedirs(os.path.join(save_dir, "samples"), exist_ok=True)
     os.makedirs(os.path.join(save_dir, "checkpoints"), exist_ok=True)
-    metrics_csv = os.path.join(save_dir, 'metrics.csv')
-    metrics_logger = MetricsLogger(metrics_csv) if get_rank()==0 else None
-    # TensorBoard
-    tb_dir = os.path.join(save_dir, 'tb')
-    writer = SummaryWriter(log_dir=tb_dir) if get_rank()==0 else None
 
+    # TensorBoard writer (rank0 only)
+    tb_writer = SummaryWriter(log_dir=os.path.join(save_dir, "tb")) if get_rank()==0 else None
 
     cond_np, tgt_np,times_ids = load_cond_and_target(
         cond_file=data_cfg["cond_file"],
@@ -987,25 +917,11 @@ def main(config: Dict[str, Any]):
             diffusion, dl, optimizer, device, scaler,
             max_grad_norm=max_grad_norm,use_amp=train_cfg.get("use_amp", True),
             epoch=epoch,
-            loss_logger=loss_logger if get_rank()==0 else None,
+            metric_logger=metric_logger if get_rank()==0 else None,
         )
         rank0 = (get_rank() == 0)
         if rank0:
             print(f"[Epoch {epoch}/{num_epochs}] loss={loss_avg:.6f}")
-            if writer is not None:
-                writer.add_scalar('train/loss', float(loss_avg), epoch)
-
-        # Optional: log weight & grad histograms every 10 epochs
-        if rank0 and writer is not None and (epoch % 10 == 0):
-            try:
-                model_to_log = get_diff_mod(diffusion).model  # UNet inside Diffusion
-                for name, p_ in model_to_log.named_parameters():
-                    writer.add_histogram(f"weights/{name}", p_.detach().cpu(), epoch)
-                    if p_.grad is not None:
-                        writer.add_histogram(f"grads/{name}", p_.grad.detach().cpu(), epoch)
-            except Exception as e:
-                print(f"[TB] histogram logging skipped: {e}")
-
 
         xai_cfg = train_cfg.get("xai", {})
 
@@ -1021,38 +937,6 @@ def main(config: Dict[str, Any]):
             cond_fix, truth_fix = fixed_preview
             trip_path = os.path.join(save_dir, "samples", f"epoch_{epoch:04d}_triptych.png")
             print("path",trip_path)
-            #save_triptych_samples(diffusion, cond_fix, truth_fix, trip_path, device)
-            print(f"Saved triptych -> {trip_path}")
-            # ---- Compute and log spatial & magnitude metrics on fixed preview ----
-            with torch.no_grad():
-                diff_mod = get_diff_mod(diffusion)
-                B,_,H,W = cond_fix.shape
-                pred_fix = diff_mod.sample(cond_fix.to(device), shape=(B,1,H,W), device=device)
-                try:
-                    target_mean = _area_weighted_mean(truth_fix.to(device)).detach()
-                    pred_mean = _area_weighted_mean(pred_fix)
-                    scale = (target_mean / (pred_mean + 1e-8)).view(-1,1,1,1)
-                    pred_fix = pred_fix * scale
-                except Exception:
-                    pass
-                m = {
-                    'pattern_corr': metric_pattern_corr(pred_fix, truth_fix.to(device)),
-                    'centered_rmse': metric_centered_rmse(pred_fix, truth_fix.to(device)),
-                    'mean_bias': metric_mean_bias(pred_fix, truth_fix.to(device)),
-                    'scale_factor': metric_scale_factor(pred_fix, truth_fix.to(device)),
-                    'amp_ratio': metric_amplitude_ratio(pred_fix, truth_fix.to(device)),
-                }
-                if metrics_logger is not None:
-                    metrics_logger.write(epoch, m)
-                if writer is not None:
-                    writer.add_scalar('metrics/pattern_corr', float(m['pattern_corr']), epoch)
-                    writer.add_scalar('metrics/centered_rmse', float(m['centered_rmse']), epoch)
-                    writer.add_scalar('metrics/mean_bias', float(m['mean_bias']), epoch)
-                    writer.add_scalar('metrics/scale_factor', float(m['scale_factor']), epoch)
-                    writer.add_scalar('metrics/amp_ratio', float(m['amp_ratio']), epoch)
-            if writer is not None:
-                _tb_add_image(writer, 'samples/triptych', trip_path, epoch)
-            '''
             if config["train"].get("xai", {}).get("saliency", False):
                 quad_path = os.path.join(save_dir, "samples", f"epoch_{epoch:04d}_quad_xai.png")
                 save_quad_with_saliency(diffusion, cond_fix, truth_fix, quad_path, device)
@@ -1076,7 +960,7 @@ def main(config: Dict[str, Any]):
                 print(f"Saved triptych -> {trip_path}")
             
             
-            '''
+            
         
         if is_dist():
             dist.barrier()
@@ -1110,9 +994,9 @@ def main(config: Dict[str, Any]):
     
 default_config = {
     "data": {
-        "cond_file":  "../CESM2-LESN_emulator/co2_final.nc",
+        "cond_file":  "co2_final.nc",
         "cond_var":   "CO2_em_anthro",
-        "target_file":"../CESM2-LESN_emulator/splits/fold_1/climate_data_train_fold1.nc",
+        "target_file":"splits/fold_1/climate_data_train_fold1.nc",
         "target_var": "TREFHT",
         "stack_dim":  "year",
         "member_dim": "member_id",
@@ -1132,7 +1016,7 @@ default_config = {
         "dropout": 0.0
     },
     "train": {
-        "resume": "runs/exp3/checkpoints/ckpt_epoch_0100.pt",
+        #"resume": "runs/exp3/checkpoints/ckpt_epoch_0100.pt",
         "xai": {
              "saliency": False,
              "counterfactual": {
@@ -1163,17 +1047,10 @@ default_config = {
         "max_grad_norm": 1.0,
         "save_dir": "runs/exp3",
         "save_every": 10,
-        "sample_every": 10,
+        "sample_every": 100,
         "sample_batch": 10
     }
 }
-
-# Close TensorBoard writer
-try:
-    if get_rank()==0 and writer is not None:
-        writer.close()
-except Exception:
-    pass
 
 if __name__ == "__main__":
     cfg = default_config
@@ -1181,4 +1058,3 @@ if __name__ == "__main__":
     # with open("config.json") as f:
     #     cfg = json.load(f)
     main(cfg)
-
