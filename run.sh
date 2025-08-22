@@ -2,7 +2,7 @@
 #SBATCH --account=project_2014946
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:v100:4
-#SBATCH --time=124:00:00
+#SBATCH --time=70:00:00
 #SBATCH --mem=64G
 #SBATCH --job-name=diffusion-train
 #SBATCH --output=logs/train_%j.out
