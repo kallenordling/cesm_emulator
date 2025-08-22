@@ -1,4 +1,4 @@
-import os
+Aimport os
 import json
 from typing import Dict, Any, Tuple
 import numpy as np
@@ -15,7 +15,6 @@ from torch.utils.data.distributed import DistributedSampler
 from scipy.ndimage import gaussian_filter
 import csv
 from collections import deque
-from torch.utils.tensorboard import SummaryWriter
 
 class LossLogger:
     def __init__(self, path, smooth=100):
@@ -636,19 +635,7 @@ def get_diff_mod(model):
     from torch.nn.parallel import DistributedDataParallel as DDP
     return model.module if isinstance(model, DDP) else model
 '''
-def train_one_epoch(
-    diffusion,
-    dl,
-    optimizer,
-    device,
-    scaler,
-    max_grad_norm: float = 1.0,
-    use_amp: bool = True,
-    epoch: int = 1,
-    metric_logger=None,
-    tb_writer=None,
-    ema=None,
-):
+def train_one_epoch(diffusion, dl, optimizer, device, scaler, max_grad_norm=1.0, use_amp=True):
     diffusion.train()
     running = 0.0
     diff_mod = get_diff_mod(diffusion)
@@ -659,7 +646,7 @@ def train_one_epoch(
 
         optimizer.zero_grad(set_to_none=True)
         if use_amp:
-            with torch.amp.autocast('cuda'):
+            with torch.cuda.amp.autocast():
                 loss = diff_mod.loss(x0, cond)
             scaler.scale(loss).backward()
             if max_grad_norm is not None:
@@ -667,19 +654,6 @@ def train_one_epoch(
                 nn.utils.clip_grad_norm_(diffusion.parameters(), max_grad_norm)
             scaler.step(optimizer)
             scaler.update()
-                if ema is not None:
-                    ema.update()
-                if metric_logger is not None and 'comps' in locals():
-                    try:
-                        metric_logger.log(epoch, steps, comps.get('mse_raw', loss).item(), comps.get('mse_lat', loss).item(), comps.get('cond_loss', 0.0).item(), loss.item())
-                        if tb_writer is not None:
-                            gs = (epoch-1) * len(dl) + steps
-                            tb_writer.add_scalar('loss/mse_raw', comps.get('mse_raw', loss).item(), gs)
-                            tb_writer.add_scalar('loss/mse_lat', comps.get('mse_lat', loss).item(), gs)
-                            tb_writer.add_scalar('loss/cond_loss', comps.get('cond_loss', 0.0).item(), gs)
-                            tb_writer.add_scalar('loss/total', loss.item(), gs)
-                    except Exception:
-                        pass
         else:
             loss = diffusion.loss(x0, cond)
             loss.backward()
@@ -700,9 +674,7 @@ def train_one_epoch(
     max_grad_norm: float = 1.0,
     use_amp: bool = True,
     epoch: int = 1,
-    metric_logger=None,
-    tb_writer=None,
-    ema=None,
+    loss_logger=None,   # optional hook (rank0 only)
 ):
     diffusion.train()
     diff_mod = get_diff_mod(diffusion)
@@ -729,7 +701,7 @@ def train_one_epoch(
 
         try:
             if use_amp:
-                with torch.amp.autocast('cuda'):
+                with torch.cuda.amp.autocast():
                     loss = diff_mod.loss(x0, cond)
                 # catch non-finite loss early
                 if not torch.isfinite(loss):
@@ -743,19 +715,6 @@ def train_one_epoch(
 
                 scaler.step(optimizer)
                 scaler.update()
-                if ema is not None:
-                    ema.update()
-                if metric_logger is not None and 'comps' in locals():
-                    try:
-                        metric_logger.log(epoch, steps, comps.get('mse_raw', loss).item(), comps.get('mse_lat', loss).item(), comps.get('cond_loss', 0.0).item(), loss.item())
-                        if tb_writer is not None:
-                            gs = (epoch-1) * len(dl) + steps
-                            tb_writer.add_scalar('loss/mse_raw', comps.get('mse_raw', loss).item(), gs)
-                            tb_writer.add_scalar('loss/mse_lat', comps.get('mse_lat', loss).item(), gs)
-                            tb_writer.add_scalar('loss/cond_loss', comps.get('cond_loss', 0.0).item(), gs)
-                            tb_writer.add_scalar('loss/total', loss.item(), gs)
-                    except Exception:
-                        pass
             else:
                 loss = diff_mod.loss(x0, cond)
                 if not torch.isfinite(loss):
@@ -936,8 +895,7 @@ def main(config: Dict[str, Any]):
             diffusion, dl, optimizer, device, scaler,
             max_grad_norm=max_grad_norm,use_amp=train_cfg.get("use_amp", True),
             epoch=epoch,
-            metric_logger=metric_logger if get_rank()==0 else None,
-            tb_writer=tb_writer if get_rank()==0 else None,
+            loss_logger=loss_logger if get_rank()==0 else None,
         )
         rank0 = (get_rank() == 0)
         if rank0:
@@ -1079,21 +1037,3 @@ if __name__ == "__main__":
     # with open("config.json") as f:
     #     cfg = json.load(f)
     main(cfg)
-
-class MetricLogger:
-    def __init__(self, path, smooth=100):
-        self.path = path
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        self.fh = open(path, "a", newline="")
-        self.writer = csv.writer(self.fh)
-        self.buf_total = deque(maxlen=smooth)
-        if os.path.exists(path) and os.stat(path).st_size == 0:
-            self.writer.writerow(["epoch","step","mse_raw","mse_lat","cond_loss","total","total_smooth"])
-        elif not os.path.exists(path):
-            self.writer.writerow(["epoch","step","mse_raw","mse_lat","cond_loss","total","total_smooth"])
-
-    def log(self, epoch, step, mse_raw, mse_lat, cond_loss, total):
-        self.buf_total.append(float(total))
-        sm = sum(self.buf_total) / len(self.buf_total)
-        self.writer.writerow([epoch, step, float(mse_raw), float(mse_lat), float(cond_loss), float(total), sm])
-        self.fh.flush()
