@@ -1001,7 +1001,7 @@ def main(config: Dict[str, Any]):
             diffusion, dl, optimizer, device, scaler,
             max_grad_norm=max_grad_norm,use_amp=train_cfg.get("use_amp", True),
             epoch=epoch,
-            loss_logger=loss_logger if get_rank()==0 else None,
+            metric_logger=loss_logger if get_rank()==0 else None,
         )
         rank0 = (get_rank() == 0)
         if rank0:
