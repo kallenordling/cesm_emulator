@@ -1170,7 +1170,7 @@ default_config = {
             "weight_decay": 1e-4
         },
         "sample_steps": 20,
-        "ddim_eta": 0.0
+        "ddim_eta": 0.0,
         "num_epochs": 10000,
         "use_amp": True,
         "max_grad_norm": 1.0,
