@@ -1136,7 +1136,7 @@ default_config = {
         "max_grad_norm": 1.0,
         "save_dir": "runs/exp3",
         "save_every": 10,
-        "sample_every": 5,
+        "sample_every": 2,
         "sample_batch": 10
     }
 }
