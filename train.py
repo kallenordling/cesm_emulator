@@ -674,7 +674,17 @@ def build_model_from_config(cfg_unet: Dict[str, Any]) -> UNet:
     )
 
 def get_diff_mod(model):
+    """
+    Return the underlying Diffusion module, unwrapping common wrappers like
+    DistributedDataParallel (DDP), FSDP, and nested .module attributes.
 
+    Works even if model is wrapped multiple times.
+    """
+    # unwrap any `.module` chain (DDP, some Accelerate wrappers, nested wrappers)
+    base = model
+    while hasattr(base, "module"):
+        base = base.module
+    return base
 def _sample_compat(diff_mod, cond, B, H, W, device, steps=None, ddim_eta=0.0):
     """Call Diffusion.sample with steps if supported; otherwise fall back to legacy signature."""
     try:
