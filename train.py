@@ -473,6 +473,16 @@ def counterfactual_panels(
     grid.save(path)
 
 @torch.no_grad()
+def _sample_compat(diff_mod, cond, shape, device, steps=None, ddim_eta=0.0):
+    """
+    Call diff_mod.sample(...) with (steps, ddim_eta) if supported, else fall back to legacy signature.
+    """
+    try:
+        return diff_mod.sample(cond, shape=shape, device=device, steps=steps, ddim_eta=ddim_eta)
+    except TypeError:
+        return diff_mod.sample(cond, shape=shape, device=device)
+
+@torch.no_grad()
 def save_triptych_samples(
     diffusion,
     cond_batch: torch.Tensor,   # (B,1,H,W)
@@ -485,55 +495,78 @@ def save_triptych_samples(
     return_tensor: bool = False,
 ):
     """
-    Saves a 3-pane image per item: [cond | truth | pred] with titles.
+    Fast triptych: [cond | truth | pred] for each sample, written as a single PNG.
+    If return_tensor=True, ALWAYS returns (save_path, tb_grid) where tb_grid can be None on failure.
     """
     diffusion.eval()
-    cond = cond_batch.to(device)
-    truth = truth_batch.to(device)
+    cond  = cond_batch.to(device, non_blocking=True)
+    truth = truth_batch.to(device, non_blocking=True)
     diff_mod = get_diff_mod(diffusion)
 
     B, _, H, W = cond.shape
-    pred = _sample_compat(diff_mod, cond, B, H, W, device)
 
-    cond_v  = _minmax01(cond).cpu()
-    truth_v = _minmax01(truth).cpu()
-    pred_v  = _minmax01(pred).cpu()
+    # ---- sample with optional EMA, without copying state_dict ----
+    def _sample_with_optional_ema():
+        if ema is None:
+            return _sample_compat(diff_mod, cond, (B,1,H,W), device, steps=steps, ddim_eta=ddim_eta)
+        original = diff_mod.model
+        try:
+            diff_mod.model = ema.ema_model
+            return _sample_compat(diff_mod, cond, (B,1,H,W), device, steps=steps, ddim_eta=ddim_eta)
+        finally:
+            diff_mod.model = original
 
-    panels = []
-    titles = ["Condition", "Truth", "Prediction"]
+    with torch.inference_mode():
+        pred = _sample_with_optional_ema()
 
-    for i in range(B):
-        # Convert each panel to PIL
-        imgs = [TF.to_pil_image(cond_v[i]),
-                TF.to_pil_image(truth_v[i]),
-                TF.to_pil_image(pred_v[i])]
-        # Add titles
-        titled_imgs = []
-        for img, title in zip(imgs, titles):
-            img_with_title = Image.new("RGB", (img.width, img.height + 20), color=(255, 255, 255))
-            img_with_title.paste(img, (0, 20))
-            draw = ImageDraw.Draw(img_with_title)
-            draw.text((5, 0), title, fill=(0, 0, 0))
-            titled_imgs.append(img_with_title)
-        # Concatenate horizontally
-        total_width = sum(im.width for im in titled_imgs)
-        concat_img = Image.new("RGB", (total_width, titled_imgs[0].height))
-        x_off = 0
-        for im in titled_imgs:
-            concat_img.paste(im, (x_off, 0))
-            x_off += im.width
-        panels.append(concat_img)
+    # ---- optional global-scale adjustment ----
+    try:
+        target_mean = _area_weighted_mean(truth).detach()
+        pred_mean   = _area_weighted_mean(pred)
+        scale = (target_mean / (pred_mean + 1e-8)).view(-1, 1, 1, 1)
+        pred = pred * scale
+    except Exception as e:
+        print(f"[warn] triptych scale-adjust failed: {e}")
 
-    # Save multiple images in a grid
-    grid_width = max(img.width for img in panels)
-    grid_height = sum(img.height for img in panels)
-    grid_img = Image.new("RGB", (grid_width, grid_height), (255, 255, 255))
-    y_off = 0
-    for img in panels:
-        grid_img.paste(img, (0, y_off))
-        y_off += img.height
+    # ---- build grid [cond | truth | pred] ----
+    cond_v  = _minmax01_np(cond).cpu()
+    truth_v = _minmax01_np(truth).cpu()
+    pred_v  = _minmax01_np(pred).cpu()
 
-    grid_img.save(save_path)
+    imgs = torch.empty((3 * B, 1, H, W), dtype=cond_v.dtype)
+    imgs[0::3] = cond_v
+    imgs[1::3] = truth_v
+    imgs[2::3] = pred_v
+
+    tb_grid = None  # make sure we always define this
+    # Try torchvision fast path
+    if '_HAS_TV' in globals() and _HAS_TV:
+        try:
+            from torchvision.utils import make_grid, save_image
+            grid = make_grid(imgs, nrow=3)  # [C,H,W], in [0,1]
+            save_image(grid, save_path)
+            tb_grid = grid  # already [C,H,W]
+            return (save_path, tb_grid) if return_tensor else save_path
+        except Exception as e:
+            print(f"[warn] torchvision grid/save failed: {e}")
+
+    # Fallback to PIL/NumPy
+    try:
+        import numpy as np
+        from PIL import Image
+        rows = []
+        for i in range(B):
+            row = torch.cat([imgs[3*i + j] for j in range(3)], dim=-1)[0]  # (H, 3W)
+            rows.append(row)
+        big = torch.cat(rows, dim=-2)  # (B*H, 3W)
+        big_np = (big.clamp(0,1).numpy() * 255.0).astype(np.uint8)
+        Image.fromarray(big_np).save(save_path)
+        tb_grid = big.unsqueeze(0)  # [1, H_total, W_total]
+    except Exception as e:
+        print(f"[error] PIL fallback failed: {e}")
+        # leave tb_grid as None
+
+    return (save_path, tb_grid) if return_tensor else save_path
 
 def _ensure_hw_like(da: xr.DataArray, expect_leading: int,
                     y_name: str | None, x_name: str | None,
@@ -685,7 +718,7 @@ def get_diff_mod(model):
     while hasattr(base, "module"):
         base = base.module
     return base
-def _sample_compat(diff_mod, cond, B, H, W, device, steps=None, ddim_eta=0.0):
+def _sample_compat_old(diff_mod, cond, B, H, W, device, steps=None, ddim_eta=0.0):
     """Call Diffusion.sample with steps if supported; otherwise fall back to legacy signature."""
     try:
         return diff_mod.sample(cond, shape=(B,1,H,W), device=device, steps=steps, ddim_eta=ddim_eta)
