@@ -328,6 +328,10 @@ def _box_mask_from_coords(lat_vec, lon_vec, lat_min, lat_max, lon_min, lon_max, 
         m = np.ones((H, W), dtype=np.float32)
     t = torch.from_numpy(m).unsqueeze(0).unsqueeze(0).to(device)
     return t
+    
+def _sample_once(c):
+    print('sample once')
+    return diff_mod.sample(c, shape=(B,1,H,W), device=device)
 
 @torch.no_grad()
 def counterfactual_delta(diffusion, cond, scale=1.10, mask=None, n_samples=1, seed=None):
@@ -340,9 +344,6 @@ def counterfactual_delta(diffusion, cond, scale=1.10, mask=None, n_samples=1, se
     device = cond.device
     B, _, H, W = cond.shape
 
-    def _sample_once(c):
-        print('sample once')
-        return diff_mod.sample(c, shape=(B,1,H,W), device=device)
 
     g = None
     print('init g')
