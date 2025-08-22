@@ -1105,7 +1105,7 @@ default_config = {
         "dropout": 0.0
     },
     "train": {
-        "resume": "runs/exp3/checkpoints/ckpt_epoch_0100.pt",
+        #"resume": "runs/exp3/checkpoints/ckpt_epoch_0100.pt",
         "xai": {
              "saliency": False,
              "counterfactual": {
