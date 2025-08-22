@@ -51,8 +51,36 @@ class MetricLogger:
         self.writer.writerow([epoch, step, float(mse_raw), float(mse_lat), float(cond_loss), float(total), sm])
         self.fh.flush()
 
+def _latitude_weights(height: int, device: torch.device):
+    """
+    Compute latitude-based weights ~ cos(lat) for a grid of given height H.
+    Args:
+        height (int): number of latitude points
+        device: torch.device
+    Returns:
+        torch.Tensor of shape [H], normalized to mean=1
+    """
+    lat = torch.linspace(-90, 90, steps=height, device=device)
+    w = torch.cos(torch.deg2rad(lat)).clamp_min(0)
+    return w / (w.mean() + 1e-8)
+
+
+def _area_weighted_mean(tensor: torch.Tensor) -> torch.Tensor:
+    """
+    Compute area-weighted mean of a field [B,C,H,W] using cos(lat).
+    Args:
+        tensor: [B, C, H, W]
+    Returns:
+        [B, C] tensor of area-weighted means
+    """
+    B, C, H, W = tensor.shape
+    w = _latitude_weights(H, tensor.device).view(1, 1, H, 1)
+    return (tensor * w).mean(dim=(-2, -1))  # average over H,W
+
+
+# flag for torchvision availability (for fast grids/saving)
 try:
-    from torchvision.utils import save_image
+    import torchvision  # noqa: F401
     _HAS_TV = True
 except Exception:
     _HAS_TV = False
