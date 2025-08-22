@@ -994,9 +994,9 @@ def main(config: Dict[str, Any]):
     
 default_config = {
     "data": {
-        "cond_file":  "co2_final.nc",
+        "cond_file":  "../CESM2-LESN_emulator/co2_final.nc",
         "cond_var":   "CO2_em_anthro",
-        "target_file":"splits/fold_1/climate_data_train_fold1.nc",
+        "target_file":"../CESM2-LESN_emulator/splits/fold_1/climate_data_train_fold1.nc",
         "target_var": "TREFHT",
         "stack_dim":  "year",
         "member_dim": "member_id",
@@ -1016,7 +1016,7 @@ default_config = {
         "dropout": 0.0
     },
     "train": {
-        #"resume": "runs/exp3/checkpoints/ckpt_epoch_0100.pt",
+        "resume": "runs/exp3/checkpoints/ckpt_epoch_0100.pt",
         "xai": {
              "saliency": False,
              "counterfactual": {
