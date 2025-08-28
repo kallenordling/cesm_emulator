@@ -1011,13 +1011,10 @@ def main(config: Dict[str, Any]):
     #ds = AllMembersDataset(cond_np, tgt_np)  # covers all members every epoch
     K=5
     CROP = (128, 128)             # tiles
-    ds = WindowedAllMembersDataset(
-        cond_np, tgt_np,
-        K=K,
-        center=True,              # target = middle frame of the window
-        crop_hw=CROP,
-        crop_mode="random",       # random crops for train
-    )    
+    ds = WindowedAllMembersDataset(cond_np, tgt_np, K=5, center=False,
+                               sample_mode="random_global",
+                               keep_chronology=True, causal=False,
+                               crop_hw=(128,128))  
     sampler = None
     if is_dist():
         sampler = DistributedSampler(ds, shuffle=True, drop_last=False)
