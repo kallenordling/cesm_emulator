@@ -100,12 +100,27 @@ class UNet(nn.Module):
                 "cond is 4D. Pass a temporal window shaped [B, 1, F, H, W] so the 3D temporal layers are used."
             )
 
-        # Call the 3D U-Net; we don't use year/day conditioning.
-        out = self.net(x_t, t, days=None, years=None, cond_map=cond)
+        # --- Align frames so concat in video_net works ---
+        Fx = x_t.shape[2]         # usually 1
+        Fc = cond.shape[2]        # K
+        if Fx != Fc:
+            if Fx == 1:
+                # repeat target across time to match cond window
+                x_t = x_t.expand(-1, -1, Fc, -1, -1)  # no copy
+            else:
+                raise ValueError(f"x_t has F={Fx} and cond has F={Fc}; expected Fx==1 or Fx==Fc.")
 
-        # If model returns a singleton frames dim, squeeze it for convenience.
-        if out.ndim == 5 and out.shape[2] == 1:
-            out = out.squeeze(2)  # -> [B, 1, H, W]
+        # Forward through 3D UNet (it will cat along channels)
+        out = self.net(x_t, t, days=None, years=None, cond_map=cond)  # may return [B,1,F,H,W]
+
+        # --- Reduce frames back to a single map for loss / sampling ---
+        if out.ndim == 5:
+            Fout = out.shape[2]
+            if Fout == 1:
+                out = out.squeeze(2)  # [B,1,H,W]
+            else:
+                mid = Fout // 2       # assume center target
+                out = out[:, :, mid, :, :]  # [B,1,H,W]
         return out
 
 # -----------------------------
