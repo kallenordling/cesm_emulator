@@ -82,13 +82,15 @@ class UNet(nn.Module):
             cond_map=cond_map,
         )
 
+    # model.UNet.forward
     def forward(self, x_t, cond, t):
-        # UNetModel3D expects 5D tensors [B, C, F, H, W] and optional cond_map
-        if x_t.ndim == 4:
-            x_t = x_t.unsqueeze(2)  # add frames dim F=1
+        # x_t: [B,1,H,W] or [B,1,F,H,W]   (target can be single-frame)
+        # cond: [B,1,H,W] or [B,1,F,H,W]  (we want F=K here!)
+        if x_t.ndim == 4:         # add F only for targets
+            x_t = x_t.unsqueeze(2)      # -> [B,1,1,H,W]
         if cond is not None and cond.ndim == 4:
-            cond = cond.unsqueeze(2)
-        # Forward through 3D UNet; we do not pass day/year embeddings here
+            # if cond already 5D, leave it; if 4D, add F=1
+            cond = cond.unsqueeze(2)     # -> [B,1,1,H,W]
         out = self.net(x_t, t, days=None, years=None, cond_map=cond)
         if out.ndim == 5 and out.shape[2] == 1:
             out = out.squeeze(2)
