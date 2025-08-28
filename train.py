@@ -1009,8 +1009,15 @@ def main(config: Dict[str, Any]):
     #    fixed_member=data_cfg.get("fixed_member", 0)
     #)
     #ds = AllMembersDataset(cond_np, tgt_np)  # covers all members every epoch
-    K = 3  # try 5–7
-    ds = WindowedAllMembersDataset(cond_np, tgt_np, K=K, center=True)
+    K=5
+    CROP = (128, 128)             # tiles
+    ds = WindowedAllMembersDataset(
+        cond_np, tgt_np,
+        K=K,
+        center=True,              # target = middle frame of the window
+        crop_hw=CROP,
+        crop_mode="random",       # random crops for train
+    )    
     sampler = None
     if is_dist():
         sampler = DistributedSampler(ds, shuffle=True, drop_last=False)
