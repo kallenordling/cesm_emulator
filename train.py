@@ -848,14 +848,8 @@ def train_one_epoch(
     #if isinstance(dl.sampler, torch.utils.data.distributed.DistributedSampler):
     #    dl.sampler.set_epoch(epoch)
 
-    for step, batch in enumerate(dl, start=1):
-        # support (cond, x0) or (cond, x0, years)
-        if len(batch) == 3:
-                cond, x0, years = batch
-                years = years.to(device, non_blocking=True)
-        else:
-                cond, x0 = batch
-                years = None
+    #for step, batch in enumerate(dl, start=1):
+    for step, (cond, x0) in enumerate(df,start=1):
 
         cond = cond.to(device, non_blocking=True)
         x0   = x0.to(device, non_blocking=True)
