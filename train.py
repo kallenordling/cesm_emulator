@@ -16,7 +16,7 @@ from scipy.ndimage import gaussian_filter
 import csv
 from collections import deque
 from torch.utils.tensorboard import SummaryWriter
-from dataset_window_all_members import WindowedAllMembersDataset
+from dataset_single_members import WindowedAllMembersDataset
 
 class LossLogger:
     def __init__(self, path, smooth=100):
