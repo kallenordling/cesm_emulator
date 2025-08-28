@@ -1009,7 +1009,7 @@ def main(config: Dict[str, Any]):
     #    fixed_member=data_cfg.get("fixed_member", 0)
     #)
     #ds = AllMembersDataset(cond_np, tgt_np)  # covers all members every epoch
-    K = 5  # try 5–7
+    K = 3  # try 5–7
     ds = WindowedAllMembersDataset(cond_np, tgt_np, K=K, center=True)
     sampler = None
     if is_dist():
