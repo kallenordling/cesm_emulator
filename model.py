@@ -154,32 +154,34 @@ class Diffusion(nn.Module):
         self.register_buffer("sqrt_recip_alphas", torch.sqrt(1.0 / alphas))
         self.register_buffer("posterior_variance", betas * (1.0 - alphas_cumprod_prev) / (1.0 - alphas_cumprod))
 
-    @torch.no_grad()
+    #@torch.no_grad()
     def p_sample(self, x_t, cond, t):
-        # Standard DDPM update but noise prediction comes from the wrapped 3D model
-        betas_t = self.betas[t].view(-1, 1, 1, 1)
-        sqrt_one_minus_alphas_cumprod_t = self.sqrt_one_minus_alphas_cumprod[t].view(-1, 1, 1, 1)
-        sqrt_recip_alphas_t = self.sqrt_recip_alphas[t].view(-1, 1, 1, 1)
+        with torch.inference_mode(): 
+            # Standard DDPM update but noise prediction comes from the wrapped 3D model
+             betas_t = self.betas[t].view(-1, 1, 1, 1)
+             sqrt_one_minus_alphas_cumprod_t = self.sqrt_one_minus_alphas_cumprod[t].view(-1, 1, 1, 1)
+             sqrt_recip_alphas_t = self.sqrt_recip_alphas[t].view(-1, 1, 1, 1)
 
-        eps_theta = self.model(x_t, cond, t)  # -> (B,1,H,W)
-        model_mean = sqrt_recip_alphas_t * (x_t - betas_t / sqrt_one_minus_alphas_cumprod_t * eps_theta)
+             eps_theta = self.model(x_t, cond, t)  # -> (B,1,H,W)
+             model_mean = sqrt_recip_alphas_t * (x_t - betas_t / sqrt_one_minus_alphas_cumprod_t * eps_theta)
 
-        if (t == 0).all():
-            return model_mean
-        else:
-            posterior_var_t = self.posterior_variance[t].view(-1, 1, 1, 1)
-            noise = torch.randn_like(x_t)
-            return model_mean + torch.sqrt(posterior_var_t) * noise
+             if (t == 0).all():
+                 return model_mean
+             else:
+                posterior_var_t = self.posterior_variance[t].view(-1, 1, 1, 1)
+                 noise = torch.randn_like(x_t)
+                 return model_mean + torch.sqrt(posterior_var_t) * noise
 
-    @torch.no_grad()
+    #@torch.no_grad()
     def sample(self, cond, shape, device):
+        with torch.inference_mode(): 
         # shape: (B,1,H,W) — same as before
-        B, _, H, W = shape
-        x = torch.randn(shape, device=device)
-        for tt in reversed(range(self.T)):
-            t_tensor = torch.full((B,), tt, device=device, dtype=torch.long)
-            x = self.p_sample(x, cond, t_tensor)
-        return x
+             B, _, H, W = shape
+             x = torch.randn(shape, device=device)
+             for tt in reversed(range(self.T)):
+                 t_tensor = torch.full((B,), tt, device=device, dtype=torch.long)
+                 x = self.p_sample(x, cond, t_tensor)
+             return x
 
     def q_sample(self, x0, t, noise=None):
         if noise is None:
