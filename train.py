@@ -1181,7 +1181,8 @@ default_config = {
         "num_res_blocks": 8,
         "time_dim": 124,
         "groups": 8,
-        "dropout": 0.0
+        "dropout": 0.0,
+        "use_checkpoint": True
     },
     "train": {
         #"resume": "runs/exp3/checkpoints/ckpt_epoch_1040.pt",
