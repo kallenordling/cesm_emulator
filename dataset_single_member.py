@@ -2,6 +2,57 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
+class WindowedCondDataset(torch.utils.data.Dataset):
+    """
+    Build temporal windows from (T, M, 1, H, W) arrays.
+    Returns:
+      cond_win: [1, K, H, W]   # K-frame window for the condition
+      x0     : [1, H, W]       # target at center (or last) frame
+    """
+    def __init__(self, cond_np, tgt_np, K=5, center=True, member_mode="random", fixed_member=0):
+        assert cond_np.ndim == 5 and tgt_np.ndim == 5, "Expect (T,M,1,H,W)"
+        assert cond_np.shape[:2] == tgt_np.shape[:2], "T and M must match"
+        self.cond = cond_np.astype(np.float32)
+        self.tgt  = tgt_np.astype(np.float32)
+        self.T, self.M = self.cond.shape[:2]
+        self.K = int(K)
+        self.center = bool(center)
+        self.member_mode = member_mode
+        self.fixed_member = int(fixed_member)
+        if self.K < 2:
+            raise ValueError("K must be >= 2")
+        if self.T < self.K:
+            raise ValueError(f"T={self.T} is smaller than window K={self.K}")
+
+    def __len__(self):
+        # number of valid starting indices for a full K window times members
+        return (self.T - self.K + 1) * self.M
+
+    def __getitem__(self, idx):
+        # map flat idx -> (t0, m)
+        m = idx % self.M
+        w = idx // self.M
+        t0 = w
+        t1 = t0 + self.K
+
+        # pick member index for target if requested
+        if self.member_mode == "fixed":
+            m_tgt = self.fixed_member
+        elif self.member_mode == "same":
+            m_tgt = m
+        else:  # "random"
+            m_tgt = np.random.randint(0, self.M)
+
+        # cond window: (K,1,H,W) -> (1,K,H,W)
+        cond_win = torch.from_numpy(self.cond[t0:t1, m])    # (K,1,H,W)
+        cond_win = cond_win.permute(1, 0, 2, 3).contiguous()  # (1,K,H,W)
+
+        # pick target frame (center or last)
+        t_target = t0 + (self.K // 2) if self.center else (t1 - 1)
+        x0 = torch.from_numpy(self.tgt[t_target, m_tgt])    # (1,H,W)
+
+        return cond_win, x0
+
 class AllMembersDataset(torch.utils.data.Dataset):
     """
     cond_np: (T, M, 1, H, W)
