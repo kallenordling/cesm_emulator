@@ -169,8 +169,8 @@ class Diffusion(nn.Module):
                  return model_mean
              else:
                 posterior_var_t = self.posterior_variance[t].view(-1, 1, 1, 1)
-                 noise = torch.randn_like(x_t)
-                 return model_mean + torch.sqrt(posterior_var_t) * noise
+                noise = torch.randn_like(x_t)
+                return model_mean + torch.sqrt(posterior_var_t) * noise
 
     #@torch.no_grad()
     def sample(self, cond, shape, device):
