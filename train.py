@@ -1202,7 +1202,7 @@ default_config = {
                  }
              }
          },
-        "batch_size": 10,
+        "batch_size": 5,
         "num_workers": 0,
         "timesteps": 1000,
         "beta_schedule": "linear",
