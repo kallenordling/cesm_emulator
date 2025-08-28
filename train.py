@@ -17,6 +17,8 @@ import csv
 from collections import deque
 from torch.utils.tensorboard import SummaryWriter
 from dataset_single_member import WindowedAllMembersDataset
+from dataset_single_member import WindowedAllMembersDataset_random
+
 
 class LossLogger:
     def __init__(self, path, smooth=100):
@@ -1011,7 +1013,7 @@ def main(config: Dict[str, Any]):
     #ds = AllMembersDataset(cond_np, tgt_np)  # covers all members every epoch
     K=5
     CROP = (128, 128)             # tiles
-    ds = WindowedAllMembersDataset(cond_np, tgt_np, K=5, center=False,
+    ds = WindowedAllMembersDataset_random(cond_np, tgt_np, K=5, center=False,
                                sample_mode="random_global",
                                keep_chronology=True, causal=False,
                                crop_hw=(128,128))  
