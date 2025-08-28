@@ -4,16 +4,20 @@ from torch.utils.data import Dataset
 
 class WindowedAllMembersDataset(Dataset):
     """
-    Inputs (preloaded as numpy arrays):
-      cond_np, tgt_np: shape (T, M, 1, H, W)
-
-    Each sample:
-      cond_win: [1, K, H, W]  from *the same member m*
-      x0     : [1, H, W]      target at center (or last) frame from the same m
-
-    One epoch iterates over ALL members and ALL valid windows (T-K+1) per member.
+    cond_np, tgt_np: (T, M, 1, H, W)
+    Returns per item:
+      cond_win: [1, K, h, w]
+      x0     : [1, h, w]
     """
-    def __init__(self, cond_np, tgt_np, K=5, center=True):
+    def __init__(
+        self,
+        cond_np,
+        tgt_np,
+        K=5,
+        center=True,
+        crop_hw=None,          # e.g., (128, 128) or None for no crop
+        crop_mode="random",    # "random" or "center"
+    ):
         assert cond_np.ndim == 5 and tgt_np.ndim == 5, "Expect (T, M, 1, H, W)"
         assert cond_np.shape == tgt_np.shape, "cond/tgt shapes must match"
         self.cond = cond_np.astype(np.float32)
@@ -23,30 +27,61 @@ class WindowedAllMembersDataset(Dataset):
         if self.T < K: raise ValueError(f"T={self.T} < K={K}")
         self.K = int(K)
         self.center = bool(center)
-        self.num_windows = self.T - self.K + 1  # windows per member
+
+        # --- crop config ---
+        if crop_hw is None:
+            self.crop_h = None
+            self.crop_w = None
+        else:
+            ch, cw = int(crop_hw[0]), int(crop_hw[1])
+            # clamp to available size to avoid negative ranges
+            self.crop_h = min(ch, self.H)
+            self.crop_w = min(cw, self.W)
+        if crop_mode not in ("random", "center"):
+            raise ValueError("crop_mode must be 'random' or 'center'")
+        self.crop_mode = crop_mode
+
+        self.num_windows = self.T - self.K + 1
 
     def __len__(self):
-        # all windows for all members
         return self.num_windows * self.M
 
     def _index_to_tm(self, idx):
-        # map flat idx -> (t0, m) covering all members each epoch
         m = idx % self.M
         w = idx // self.M
         t0 = w
         return t0, m
+
+    def _crop_coords(self, H, W):
+        """Choose top-left (i,j) for crop respecting crop_mode."""
+        if self.crop_h is None or self.crop_w is None:
+            return 0, 0, H, W
+        h, w = self.crop_h, self.crop_w
+        if self.crop_mode == "center":
+            i = max(0, (H - h) // 2)
+            j = max(0, (W - w) // 2)
+        else:  # random
+            i = 0 if H == h else np.random.randint(0, H - h + 1)
+            j = 0 if W == w else np.random.randint(0, W - w + 1)
+        return i, j, h, w
 
     def __getitem__(self, idx):
         t0, m = self._index_to_tm(idx)
         t1 = t0 + self.K
 
         # cond window: (K,1,H,W) -> (1,K,H,W)
-        cond_win = torch.from_numpy(self.cond[t0:t1, m])          # (K,1,H,W)
-        cond_win = cond_win.permute(1, 0, 2, 3).contiguous()      # (1,K,H,W)
+        cond_win = torch.from_numpy(self.cond[t0:t1, m])           # (K,1,H,W)
+        cond_win = cond_win.permute(1, 0, 2, 3).contiguous()       # (1,K,H,W)
 
-        # pick target frame from the same member
+        # target from same member, center or last frame of window
         t_target = t0 + (self.K // 2) if self.center else (t1 - 1)
-        x0 = torch.from_numpy(self.tgt[t_target, m])              # (1,H,W)
+        x0 = torch.from_numpy(self.tgt[t_target, m])               # (1,H,W)
+
+        # --- apply crop (same i,j,h,w to both) ---
+        _, K, H, W = cond_win.shape
+        i, j, h, w = self._crop_coords(H, W)
+        cond_win = cond_win[:, :, i:i+h, j:j+w].contiguous()       # (1,K,h,w)
+        x0       = x0[:, i:i+h, j:j+w].contiguous()                # (1,h,w)
 
         return cond_win, x0
 
