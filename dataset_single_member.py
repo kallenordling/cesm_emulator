@@ -17,6 +17,8 @@ class WindowedAllMembersDataset(Dataset):
         center=True,
         crop_hw=None,          # e.g., (128, 128) or None for no crop
         crop_mode="random",    # "random" or "center"
+        time_reverse_p=0.5,      # <--- NEW
+
     ):
         assert cond_np.ndim == 5 and tgt_np.ndim == 5, "Expect (T, M, 1, H, W)"
         assert cond_np.shape == tgt_np.shape, "cond/tgt shapes must match"
@@ -27,6 +29,7 @@ class WindowedAllMembersDataset(Dataset):
         if self.T < K: raise ValueError(f"T={self.T} < K={K}")
         self.K = int(K)
         self.center = bool(center)
+        self.time_reverse_p = float(time_reverse_p)
 
         # --- crop config ---
         if crop_hw is None:
@@ -76,7 +79,10 @@ class WindowedAllMembersDataset(Dataset):
         # target from same member, center or last frame of window
         t_target = t0 + (self.K // 2) if self.center else (t1 - 1)
         x0 = torch.from_numpy(self.tgt[t_target, m])               # (1,H,W)
-
+        
+        if self.time_reverse_p > 0.0 and np.random.rand() < self.time_reverse_p:
+            cond_win = cond_win.flip(dims=(1,))  # flip along the K dimension
+            
         # --- apply crop (same i,j,h,w to both) ---
         _, K, H, W = cond_win.shape
         i, j, h, w = self._crop_coords(H, W)
