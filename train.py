@@ -1010,7 +1010,7 @@ def main(config: Dict[str, Any]):
     #)
     #ds = AllMembersDataset(cond_np, tgt_np)  # covers all members every epoch
     K = 5  # try 5–7
-    dataset = WindowedAllMembersDataset(cond_np, tgt_np, K=K, center=True)
+    ds = WindowedAllMembersDataset(cond_np, tgt_np, K=K, center=True)
     sampler = None
     if is_dist():
         sampler = DistributedSampler(ds, shuffle=True, drop_last=False)
