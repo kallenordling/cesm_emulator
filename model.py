@@ -82,56 +82,56 @@ class UNet(nn.Module):
             cond_map=cond_map,
         )
 
-def forward(self, x_t, cond, t):
-    """
-    x_t  : [B, 1, H, W] or [B, 1, F, H, W]   (noisy target; usually single-frame)
-    cond : [B, 1, H, W] or [B, 1, F, H, W]   (condition; accepts single frame or window)
-    t    : [B] or scalar diffusion timestep
+    def forward(self, x_t, cond, t):
+        """
+        x_t  : [B, 1, H, W] or [B, 1, F, H, W]   (noisy target; usually single-frame)
+        cond : [B, 1, H, W] or [B, 1, F, H, W]   (condition; accepts single frame or window)
+        t    : [B] or scalar diffusion timestep
+    
+        - Adds a frames dim to any 4D input.
+        - Aligns frames so channel-concat in the 3D UNet is valid.
+        - After the 3D UNet, returns a 2D map [B, 1, H, W] by squeezing or
+          selecting the center frame if multiple frames are produced.
+        """
+        # Ensure explicit frames dim for target
+        if x_t.ndim == 4:
+              x_t = x_t.unsqueeze(2)  # [B,1,1,H,W]
+        elif x_t.ndim != 5:
+           raise ValueError(f"x_t must be 4D or 5D, got {x_t.ndim}D")
 
-    - Adds a frames dim to any 4D input.
-    - Aligns frames so channel-concat in the 3D UNet is valid.
-    - After the 3D UNet, returns a 2D map [B, 1, H, W] by squeezing or
-      selecting the center frame if multiple frames are produced.
-    """
-    # Ensure explicit frames dim for target
-    if x_t.ndim == 4:
-        x_t = x_t.unsqueeze(2)  # [B,1,1,H,W]
-    elif x_t.ndim != 5:
-        raise ValueError(f"x_t must be 4D or 5D, got {x_t.ndim}D")
+        # Accept 4D cond at inference: add frames dim (F=1)
+        if cond is None:
+            raise ValueError("cond must be provided")
+        if cond.ndim == 4:
+            cond = cond.unsqueeze(2)  # [B,1,1,H,W]
+        elif cond.ndim != 5:
+            raise ValueError(f"cond must be 4D or 5D, got {cond.ndim}D")
 
-    # Accept 4D cond at inference: add frames dim (F=1)
-    if cond is None:
-        raise ValueError("cond must be provided")
-    if cond.ndim == 4:
-        cond = cond.unsqueeze(2)  # [B,1,1,H,W]
-    elif cond.ndim != 5:
-        raise ValueError(f"cond must be 4D or 5D, got {cond.ndim}D")
+        # Align frames (F) so torch.cat([x, cond], dim=1) inside net works
+        Fx, Fc = x_t.shape[2], cond.shape[2]
+        if Fx != Fc:
+            if Fx == 1 and Fc > 1:
+                x_t = x_t.expand(-1, -1, Fc, -1, -1)
+            elif Fc == 1 and Fx > 1:
+                cond = cond.expand(-1, -1, Fx, -1, -1)
+            else:
+                raise ValueError(f"Frame mismatch: x_t F={Fx}, cond F={Fc}")
 
-    # Align frames (F) so torch.cat([x, cond], dim=1) inside net works
-    Fx, Fc = x_t.shape[2], cond.shape[2]
-    if Fx != Fc:
-        if Fx == 1 and Fc > 1:
-            x_t = x_t.expand(-1, -1, Fc, -1, -1)
-        elif Fc == 1 and Fx > 1:
-            cond = cond.expand(-1, -1, Fx, -1, -1)
-        else:
-            raise ValueError(f"Frame mismatch: x_t F={Fx}, cond F={Fc}")
+        # Forward through 3D UNet (no day/year conditioning)
+        out = self.net(x_t, t, days=None, years=None, cond_map=cond)
 
-    # Forward through 3D UNet (no day/year conditioning)
-    out = self.net(x_t, t, days=None, years=None, cond_map=cond)
+        # Reduce frames back to a single map for loss/sampling
+        if out.ndim == 5:
+            Fout = out.shape[2]
+            if Fout == 1:
+                out = out.squeeze(2)                  # [B,1,H,W]
+            else:
+                mid = Fout // 2
+                out = out[:, :, mid, :, :]            # [B,1,H,W]
+        elif out.ndim != 4:
+            raise ValueError(f"Unexpected output ndim={out.ndim}")
 
-    # Reduce frames back to a single map for loss/sampling
-    if out.ndim == 5:
-        Fout = out.shape[2]
-        if Fout == 1:
-            out = out.squeeze(2)                  # [B,1,H,W]
-        else:
-            mid = Fout // 2
-            out = out[:, :, mid, :, :]            # [B,1,H,W]
-    elif out.ndim != 4:
-        raise ValueError(f"Unexpected output ndim={out.ndim}")
-
-    return out
+        return out
 
 # -----------------------------
 # Diffusion wrapper (2D API)
