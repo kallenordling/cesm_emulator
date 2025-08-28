@@ -83,16 +83,29 @@ class UNet(nn.Module):
         )
 
     def forward(self, x_t, cond, t):
-        # x_t: [B,1,H,W] or [B,1,F,H,W]   (target can be single-frame)
-        # cond: [B,1,H,W] or [B,1,F,H,W]  (we want F=K here!)
-        if x_t.ndim == 4:         # add F only for targets
-            x_t = x_t.unsqueeze(2)      # -> [B,1,1,H,W]
-        if cond is not None and cond.ndim == 4:
-            # if cond already 5D, leave it; if 4D, add F=1
-            cond = cond.unsqueeze(2)     # -> [B,1,1,H,W]
+        """
+        x_t : [B, 1, H, W] or [B, 1, F, H, W]  (noisy target; F may be 1)
+        cond: [B, 1, F, H, W]                  (temporal window; MUST be 5D)
+        t    : [B] or scalar timestep index
+        """
+        # Target can be single-frame; if 4D, add F=1
+        if x_t.ndim == 4:
+            x_t = x_t.unsqueeze(2)  # -> [B, 1, 1, H, W]
+
+        # Condition must carry a time window (F>1 ideally). Enforce 5D.
+        if cond is None:
+            raise ValueError("cond must be provided and be 5D [B, 1, F, H, W].")
+        if cond.ndim == 4:
+            raise ValueError(
+                "cond is 4D. Pass a temporal window shaped [B, 1, F, H, W] so the 3D temporal layers are used."
+            )
+
+        # Call the 3D U-Net; we don't use year/day conditioning.
         out = self.net(x_t, t, days=None, years=None, cond_map=cond)
+
+        # If model returns a singleton frames dim, squeeze it for convenience.
         if out.ndim == 5 and out.shape[2] == 1:
-            out = out.squeeze(2)
+            out = out.squeeze(2)  # -> [B, 1, H, W]
         return out
 
 # -----------------------------
