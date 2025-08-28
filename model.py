@@ -82,7 +82,6 @@ class UNet(nn.Module):
             cond_map=cond_map,
         )
 
-    # model.UNet.forward
     def forward(self, x_t, cond, t):
         # x_t: [B,1,H,W] or [B,1,F,H,W]   (target can be single-frame)
         # cond: [B,1,H,W] or [B,1,F,H,W]  (we want F=K here!)
