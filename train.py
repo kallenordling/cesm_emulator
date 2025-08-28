@@ -850,7 +850,7 @@ def train_one_epoch(
     #    dl.sampler.set_epoch(epoch)
 
     #for step, batch in enumerate(dl, start=1):
-    for step, (cond, x0) in enumerate(df,start=1):
+    for step, (cond, x0) in enumerate(dl,start=1):
 
         cond = cond.to(device, non_blocking=True)
         x0   = x0.to(device, non_blocking=True)
