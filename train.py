@@ -735,6 +735,7 @@ def build_model_from_config(cfg_unet: Dict[str, Any]) -> UNet:
         num_res_blocks=cfg_unet.get("num_res_blocks", 2),
         time_dim=cfg_unet.get("time_dim", 256),
         groups=cfg_unet.get("groups", 8),
+        use_checkpoint=cfg_unet.get("use_checkpoint",True),
         dropout=cfg_unet.get("dropout", 0.0),
     )
 
@@ -1012,12 +1013,20 @@ def main(config: Dict[str, Any]):
     #    fixed_member=data_cfg.get("fixed_member", 0)
     #)
     #ds = AllMembersDataset(cond_np, tgt_np)  # covers all members every epoch
-    K=5
-    CROP = (128, 128)             # tiles
-    ds = WindowedAllMembersDataset_random(cond_np, tgt_np, K=5, center=False,
-                               sample_mode="random_global",
-                               keep_chronology=True, causal=False,
-                               crop_hw=(128,128))  
+    #K=5
+    #CROP = (128, 128)             # tiles
+    ds = WindowedAllMembersDataset(
+        cond_np, tgt_np,
+        K=cfg["dataset"]["K"],
+        center=cfg["dataset"]["center"],
+        crop_hw=tuple(cfg["dataset"]["crop_hw"]) if cfg["dataset"]["crop_hw"] else None,
+        crop_mode=cfg["dataset"]["crop_mode"],
+        time_reverse_p=cfg["dataset"]["time_reverse_p"],
+        sample_mode=cfg["dataset"]["sample_mode"],
+        window_radius=cfg["dataset"]["window_radius"],
+        keep_chronology=cfg["dataset"]["keep_chronology"],
+        causal=cfg["dataset"]["causal"],
+    )
     sampler = None
     if is_dist():
         sampler = DistributedSampler(ds, shuffle=True, drop_last=False)
