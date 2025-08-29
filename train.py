@@ -1129,8 +1129,8 @@ def main(config: Dict[str, Any]):
             '''
             #if not (config["train"].get("xai", {}).get("counterfactual", False) or config["train"].get("xai", {}).get("saliency", False)):
             out_path, tb_img = save_triptych_samples(diffusion, cond_fix, truth_fix, trip_path, device, return_tensor=True)
-            if tb_writer is not None:
-                    tb_writer.add_image('preview/triptych', tb_img, global_step=epoch)
+            #if tb_writer is not None:
+            #        tb_writer.add_image('preview/triptych', tb_img, global_step=epoch)
             print(f"Saved triptych -> {trip_path}")
             
             
