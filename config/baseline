@@ -5,6 +5,9 @@
     "run_dir": "runs/exp_baseline"
   },
   "data": {
+    "cond_file": "../CESM2-LESN_emulator/co2_final.nc",
+    "target_file": "../CESM2-LESN_emulator/splits/fold_1/climate_data_train_fold1.nc",
+    "run_dir": "runs/exp_baseline"
     "cond_var": "CO2_em_anthro",
     "target_var": "TREFHT",
     "member_dim": "member_id",
