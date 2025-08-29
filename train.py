@@ -1015,7 +1015,7 @@ def main(config: Dict[str, Any]):
     #ds = AllMembersDataset(cond_np, tgt_np)  # covers all members every epoch
     #K=5
     #CROP = (128, 128)             # tiles
-    ds = WindowedAllMembersDataset(
+    ds = WindowedAllMembersDataset_random(
         cond_np, tgt_np,
         K=cfg["dataset"]["K"],
         center=cfg["dataset"]["center"],
