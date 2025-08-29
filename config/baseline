@@ -40,7 +40,7 @@
   "train": {
     "batch_size": 2,
     "accum_steps": 4,
-    "num_workers": 2,
+    "num_workers": 1,
     "epochs": 50,
     "use_amp": true,
     "max_grad_norm": 1.0,
