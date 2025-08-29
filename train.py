@@ -1180,15 +1180,15 @@ default_config = {
         "fixed_member": 0
     },
     "unet": {
-        "in_channels": 2,
-        "out_channels": 1,
-        "base_ch": 48,
-        "ch_mults": [1, 2, 4,8],
-        "num_res_blocks": 8,
-        "time_dim": 124,
-        "groups": 8,
-        "dropout": 0.0,
-        "use_checkpoint": True
+      "in_channels": 2,
+      "out_channels": 1,
+      "base_ch": 64,
+      "ch_mults": [1, 2, 4],
+      "num_res_blocks": 2,
+      "time_dim": 124,
+      "groups": 8,
+      "dropout": 0.0,
+      "use_checkpoint": true
     },
     "train": {
         #"resume": "runs/exp3/checkpoints/ckpt_epoch_1040.pt",
@@ -1222,7 +1222,7 @@ default_config = {
         "num_epochs": 10000,
         "use_amp": True,
         "max_grad_norm": 1.0,
-        "save_dir": "runs/exp3",
+        "save_dir": "runs/exp4",
         "save_every": 10,
         "sample_every": 100,
         "sample_batch": 2
