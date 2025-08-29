@@ -18,7 +18,7 @@ from collections import deque
 from torch.utils.tensorboard import SummaryWriter
 from dataset_single_member import WindowedAllMembersDataset
 from dataset_single_member import WindowedAllMembersDataset_random
-
+from utils_conf import load_config,apply_overrides
 
 class LossLogger:
     def __init__(self, path, smooth=100):
@@ -1166,71 +1166,20 @@ def main(config: Dict[str, Any]):
     if get_rank()==0 and loss_logger is not None:
         loss_logger.close()
     
-default_config = {
-    "data": {
-        "cond_file":  "../CESM2-LESN_emulator/co2_final.nc",
-        "cond_var":   "CO2_em_anthro",
-        "target_file":"../CESM2-LESN_emulator/splits/fold_1/climate_data_train_fold1.nc",
-        "target_var": "TREFHT",
-        "stack_dim":  "year",
-        "member_dim": "member_id",
-        "lat_name":   "lat",
-        "lon_name":   "lon",
-        "member_mode": "random",
-        "fixed_member": 0
-    },
-    "unet": {
-      "in_channels": 2,
-      "out_channels": 1,
-      "base_ch": 64,
-      "ch_mults": [1, 2, 4],
-      "num_res_blocks": 2,
-      "time_dim": 124,
-      "groups": 8,
-      "dropout": 0.0,
-      "use_checkpoint": true
-    },
-    "train": {
-        #"resume": "runs/exp3/checkpoints/ckpt_epoch_1040.pt",
-        "xai": {
-             "saliency": False,
-             "counterfactual": {
-                 "enabled": False,
-                 "scale": 1.10,
-                 "n_samples": 1,
-                 "seed": 123,
-                 "region": {
-                     "type": "box",
-                     "lat_min": 30,
-                     "lat_max": 60,
-                     "lon_min": -130,
-                     "lon_max": -60
-                 }
-             }
-         },
-        "batch_size": 5,
-        "num_workers": 0,
-        "timesteps": 1000,
-        "beta_schedule": "linear",
-        "optimizer": {
-            "lr": 2e-4,
-            "betas": [0.9, 0.999],
-            "weight_decay": 1e-4
-        },
-        "sample_steps": 20,
-        "ddim_eta": 0.0,
-        "num_epochs": 10000,
-        "use_amp": True,
-        "max_grad_norm": 1.0,
-        "save_dir": "runs/exp4",
-        "save_every": 10,
-        "sample_every": 100,
-        "sample_batch": 2
-    }
-}
+
 
 if __name__ == "__main__":
-    cfg = default_config
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=str, required=True,
+                        help="Path to config (JSON or YAML)")
+    parser.add_argument("--set", nargs="*", default=[],
+                        help='Dot overrides, e.g. train.batch_size=4 unet.base_ch=64')
+    args = parser.parse_args()
+
+    cfg = load_config(args.config)
+    apply_overrides(cfg, args.set)
+
+    #cfg = default_config
     # If you prefer a JSON file:
     # with open("config.json") as f:
     #     cfg = json.load(f)
