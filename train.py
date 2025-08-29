@@ -1179,7 +1179,7 @@ if __name__ == "__main__":
 
     cfg = load_config(args.config)
     apply_overrides(cfg, args.set)
-
+    print(cfg)
     #cfg = default_config
     # If you prefer a JSON file:
     # with open("config.json") as f:
