@@ -1,0 +1,52 @@
+{
+  "paths": {
+    "cond_file": "../CESM2-LESN_emulator/co2_final.nc",
+    "target_file": "../CESM2-LESN_emulator/splits/fold_1/climate_data_train_fold1.nc",
+    "run_dir": "runs/exp_baseline"
+  },
+  "data": {
+    "cond_var": "CO2_em_anthro",
+    "target_var": "TREFHT",
+    "member_dim": "member_id",
+    "year_dim": "year",
+    "lat_name": "lat",
+    "lon_name": "lon",
+    "normalize_cond": true
+  },
+  "dataset": {
+    "K": 3,
+    "center": true,
+    "crop_hw": [128, 128],
+    "crop_mode": "random",
+    "time_reverse_p": 0.5,
+    "sample_mode": "consecutive",
+    "window_radius": 5,
+    "keep_chronology": true,
+    "causal": false
+  },
+  "unet": {
+    "in_channels": 2,
+    "out_channels": 1,
+    "base_ch": 64,
+    "ch_mults": [1, 2, 4],
+    "num_res_blocks": 2,
+    "time_dim": 124,
+    "groups": 8,
+    "dropout": 0.0,
+    "use_checkpoint": true
+  },
+  "diffusion": {
+    "timesteps": 1000,
+    "beta_schedule": "linear"
+  },
+  "train": {
+    "batch_size": 2,
+    "accum_steps": 4,
+    "num_workers": 2,
+    "epochs": 50,
+    "use_amp": true,
+    "max_grad_norm": 1.0,
+    "sample_batch": 1,
+    "seed": 42
+  }
+}
