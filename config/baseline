@@ -46,10 +46,8 @@
     "max_grad_norm": 1.0,
     "sample_batch": 1,
     "seed": 42,
-    "save_dir": "runs/exp4",
-    "num_epochs": 10000,
     "save_dir": "runs/exp_baseline",
     "save_every": 10,
-    "sample_every": 100,
+    "sample_every": 100
   }
 }
