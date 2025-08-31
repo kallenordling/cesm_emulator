@@ -18,8 +18,6 @@ from collections import deque
 from torch.utils.tensorboard import SummaryWriter
 from dataset_single_member import WindowedAllMembersDataset
 from dataset_single_member import WindowedAllMembersDataset_random
-from utils_conf import load_config,apply_overrides
-import json, os, pathlib, argparse
 
 class LossLogger:
     def __init__(self, path, smooth=100):
@@ -974,7 +972,7 @@ def load_checkpoint(
     return start_epoch
 
 
-def main(config: Dict[str, Any]):
+def train_model(config: Dict[str, Any]):
     setup_distributed()
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
@@ -982,6 +980,7 @@ def main(config: Dict[str, Any]):
     data_cfg = config["data"]
     train_cfg = config["train"]
     unet_cfg = config["unet"]
+    dataset_cfg = config["dataset"]
 
     save_dir = train_cfg.get("save_dir", "runs/exp1")
     os.makedirs(save_dir, exist_ok=True)
@@ -1017,15 +1016,15 @@ def main(config: Dict[str, Any]):
     #CROP = (128, 128)             # tiles
     ds = WindowedAllMembersDataset_random(
         cond_np, tgt_np,
-        K=cfg["dataset"]["K"],
-        center=cfg["dataset"]["center"],
-        crop_hw=tuple(cfg["dataset"]["crop_hw"]) if cfg["dataset"]["crop_hw"] else None,
-        crop_mode=cfg["dataset"]["crop_mode"],
-        time_reverse_p=cfg["dataset"]["time_reverse_p"],
-        sample_mode=cfg["dataset"]["sample_mode"],
-        window_radius=cfg["dataset"]["window_radius"],
-        keep_chronology=cfg["dataset"]["keep_chronology"],
-        causal=cfg["dataset"]["causal"],
+        K=dataset_cfg["K"],
+        center=dataset_cfg["center"],
+        crop_hw=tuple(dataset_cfg["crop_hw"]) if dataset_cfg["crop_hw"] else None,
+        crop_mode=dataset_cfg["crop_mode"],
+        time_reverse_p=dataset_cfg["time_reverse_p"],
+        sample_mode=dataset_cfg["sample_mode"],
+        window_radius=dataset_cfg["window_radius"],
+        keep_chronology=dataset_cfg["keep_chronology"],
+        causal=dataset_cfg["causal"],
     )
     sampler = None
     if is_dist():
@@ -1177,20 +1176,3 @@ def main(config: Dict[str, Any]):
         loss_logger.close()
     
 
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, required=True,
-                        help="Path to config (JSON or YAML)")
-    parser.add_argument("--set", nargs="*", default=[],
-                        help='Dot overrides, e.g. train.batch_size=4 unet.base_ch=64')
-    args = parser.parse_args()
-
-    cfg = load_config(args.config)
-    apply_overrides(cfg, args.set)
-    print(cfg)
-    #cfg = default_config
-    # If you prefer a JSON file:
-    # with open("config.json") as f:
-    #     cfg = json.load(f)
-    main(cfg)
