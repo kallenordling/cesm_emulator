@@ -38,6 +38,7 @@
     "beta_schedule": "linear"
   },
   "train": {
+    "resume": "runs/exp_baseline/checkpoints/final.pt",
     "batch_size": 2,
     "accum_steps": 4,
     "num_workers": 1,
@@ -47,6 +48,7 @@
     "sample_batch": 1,
     "seed": 42,
     "save_dir": "runs/exp_baseline",
+    "num_epochs": 10000,
     "save_every": 10,
     "sample_every": 100
   }
