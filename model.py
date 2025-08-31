@@ -29,7 +29,7 @@ class SiLU(nn.Module):
 
 # -----------------------------
 # 2D-facing wrapper around your 3D UNet
-# Keeps train.py API the same: forward(x, cond, t) -> (B,1,H,W)
+# Keeps training.py API the same: forward(x, cond, t) -> (B,1,H,W)
 # Internally: adds a singleton time dim (T=1) and calls UNetModel3D
 # -----------------------------
 
