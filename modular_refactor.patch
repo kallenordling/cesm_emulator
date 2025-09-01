@@ -1,0 +1,351 @@
+diff --git a/utils_conf.py b/config.py
+similarity index 100%
+rename from utils_conf.py
+rename to config.py
+diff --git a/config/baseline b/configs/baseline
+similarity index 100%
+rename from config/baseline
+rename to configs/baseline
+diff --git a/main.py b/main.py
+new file mode 100644
+index 0000000..a427ac3
+--- /dev/null
++++ b/main.py
+@@ -0,0 +1,38 @@
++import argparse
++from config import load_config, apply_overrides
++from training import train_model
++from plotting import plot_emiss_vs_temp, predict_cumulative_temperature
++
++
++def main() -> None:
++    parser = argparse.ArgumentParser(description="CESM emulator entrypoint")
++    sub = parser.add_subparsers(dest="command", required=True)
++
++    train_p = sub.add_parser("train", help="Run model training")
++    train_p.add_argument("--config", type=str, required=True, help="Path to config file")
++    train_p.add_argument("--set", nargs="*", default=[], help="Override config values")
++
++    plot_p = sub.add_parser("plot", help="Generate plots")
++    plot_p.add_argument("--mode", choices=["emiss_vs_temp", "cumulative"], required=True, help="Plot type")
++
++    args = parser.parse_args()
++
++    if args.command == "train":
++        cfg = load_config(args.config)
++        apply_overrides(cfg, args.set)
++        train_model(cfg)
++    elif args.command == "plot":
++        if args.mode == "emiss_vs_temp":
++            plot_emiss_vs_temp()
++        else:
++            predict_cumulative_temperature(
++                ckpt_path="runs/exp3/checkpoints/ckpt_epoch_0070.pt",
++                cond_file="../CESM2-LESN_emulator/co2_final.nc",
++                cond_var="CO2_em_anthro",
++                target_file="../CESM2-LESN_emulator/splits/fold_1/climate_data_train_fold1.nc",
++                target_var="TREFHT",
++            )
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/model.py b/model.py
+index 1a98a6e..10d309f 100644
+--- a/model.py
++++ b/model.py
+@@ -29,7 +29,7 @@ class SiLU(nn.Module):
+ 
+ # -----------------------------
+ # 2D-facing wrapper around your 3D UNet
+-# Keeps train.py API the same: forward(x, cond, t) -> (B,1,H,W)
++# Keeps training.py API the same: forward(x, cond, t) -> (B,1,H,W)
+ # Internally: adds a singleton time dim (T=1) and calls UNetModel3D
+ # -----------------------------
+ 
+diff --git a/plot_cumulative_emissins.py b/plot_cumulative_emissins.py
+deleted file mode 100644
+index 4e2effe..0000000
+--- a/plot_cumulative_emissins.py
++++ /dev/null
+@@ -1,71 +0,0 @@
+-import numpy as np
+-import xarray as xr
+-import pandas as pd
+-import matplotlib.pyplot as plt
+-from inference import predict_temperature_from_emissions
+-from utils import unstandardize
+-
+-def calcmean(ds):
+-	weights = np.cos(np.deg2rad(ds.lat))
+-	ds_weighted = ds.weighted(weights)
+-	return ds_weighted.mean(("lon", "lat"))	
+-
+-
+-import xarray as xr
+-from inference import predict_temperature_from_emissions
+-
+-CKPT = "runs/exp3/checkpoints/ckpt_epoch_0070.pt"
+-COND = "../CESM2-LESN_emulator/co2_final.nc"                 # your emissions file
+-COND_VAR = "CO2_em_anthro"
+-YEAR = 2010                           # <- pick the year you want
+-TMP = "cond_year.nc"        # temp file for the one-year subset
+-OUT = "predicted/pred_TREFHT_2010.nc" # optional output
+-TARGET_FILE = "../CESM2-LESN_emulator/splits/fold_1/climate_data_train_fold1.nc"  # use the file used for that checkpoint
+-TARGET_VAR  = "TREFHT"
+-
+-with xr.open_dataset(TARGET_FILE) as ds:
+-    da = ds[TARGET_VAR].load()  # dims like (year, member_id, lat, lon)
+-    t_mean = float(da.mean().values)
+-    t_std  = float(da.std().values)
+-for YEAR in range(1850,2101):
+-	OUT = "predicted/pred_TREFHT_"+str(YEAR)+".nc" # optional output
+-	print("mean:", t_mean, "std:", t_std)
+-	# 1) Make a one-year subset (adjust dim names if needed)
+-	with xr.open_dataset(COND) as ds:
+-	    ds_year = ds.sel(year=[YEAR]).isel(member_id=[0])           # or: ds.isel(year=index)
+-	    # (optional) pick one member too: ds_year = ds_year.sel(member_id=0)
+-	    ds_year.to_netcdf(TMP)
+-
+-	# 2) Predict temperature for that single year (and all members kept in TMP)
+-	da = predict_temperature_from_emissions(
+-	    ckpt_path=CKPT,
+-	    cond_file=TMP,
+-	    cond_var=COND_VAR,
+-	    out_path=OUT,            # or None to skip writing
+-	    device="auto",
+-	    batch_size=8,
+-	    stack_dim="year",
+-	    member_dim="member_id",
+-	    lat_name="lat",
+-	    lon_name="lon",
+-	    normalize_cond=True,
+-	    # set these if you want physical units (K/°C) instead of standardized:
+-	    target_mean=None,
+-	    target_std=None,
+-	)
+-	da=unstandardize(da,t_mean,t_std)-273.1
+-	print(da,t_mean,t_std) 
+-	da.to_netcdf(OUT)   
+-'''
+-
+-emiss= xr.open_dataset("co2_final.nc")['CO2_em_anthro'].mean('member_id').sum(['lat','lon'])
+-temp = xr.open_dataset('splits/fold_1/climate_data_train_fold1.nc')["TREFHT"].mean('member_id')
+-temp = calcmean(temp)
+-temp = temp - temp.sel(year=slice(1850,1900)).mean('year')
+-print("#### emiss #####")
+-print(emiss)
+-print("###### TEMP #######")
+-print(temp)
+-plt.plot(emiss,temp)
+-plt.savefig('cumulative_emiss.png')
+-'''
+diff --git a/plot_emiss_vs_temp.py b/plot_emiss_vs_temp.py
+deleted file mode 100644
+index e3a75aa..0000000
+--- a/plot_emiss_vs_temp.py
++++ /dev/null
+@@ -1,28 +0,0 @@
+-import numpy as np
+-import xarray as xr
+-import pandas as pd
+-import matplotlib.pyplot as plt
+-
+-def calcmean(ds):
+-	weights = np.cos(np.deg2rad(ds.lat))
+-	ds_weighted = ds.weighted(weights)
+-	return ds_weighted.mean(("lon", "lat"))	
+-
+-
+-temp_p = calcmean(xr.open_mfdataset("predicted/pred_TREFHT_*.nc"))['TREFHT_pred'].load()
+-temp_p = temp_p - temp_p.sel(year=slice(1850,1900)).mean('year')
+-print("#### PREDICTED #####")
+-print(temp_p.isel(member_id=0))
+-
+-
+-emiss= xr.open_dataset("../CESM2-LESN_emulator/co2_final.nc")['CO2_em_anthro'].isel(member_id=0).sum(['lat','lon'])
+-temp = xr.open_dataset('../CESM2-LESN_emulator/splits/fold_1/climate_data_train_fold1.nc')["TREFHT"].isel(member_id=0)
+-temp = calcmean(temp)
+-temp = temp - temp.sel(year=slice(1850,1900)).mean('year')
+-print("#### emiss #####")
+-print(emiss)
+-print("###### TEMP #######")
+-print(temp)
+-plt.plot(emiss,temp,label="training set")
+-plt.plot(emiss[0:len(temp_p)],temp_p,label="predicted")
+-plt.savefig('cumulative_emiss.png')
+diff --git a/plotting.py b/plotting.py
+new file mode 100644
+index 0000000..285aa8f
+--- /dev/null
++++ b/plotting.py
+@@ -0,0 +1,80 @@
++import numpy as np
++import xarray as xr
++import matplotlib.pyplot as plt
++from inference import predict_temperature_from_emissions
++from utils import unstandardize
++
++
++def calcmean(ds: xr.Dataset) -> xr.DataArray:
++    """Area-weighted mean over latitude and longitude."""
++    weights = np.cos(np.deg2rad(ds.lat))
++    ds_weighted = ds.weighted(weights)
++    return ds_weighted.mean(("lon", "lat"))
++
++
++def plot_emiss_vs_temp(
++    predicted_pattern: str = "predicted/pred_TREFHT_*.nc",
++    emission_path: str = "../CESM2-LESN_emulator/co2_final.nc",
++    emission_var: str = "CO2_em_anthro",
++    climate_path: str = "../CESM2-LESN_emulator/splits/fold_1/climate_data_train_fold1.nc",
++    climate_var: str = "TREFHT",
++    output: str = "cumulative_emiss.png",
++) -> None:
++    """Plot cumulative emissions against temperature."""
++    temp_p = calcmean(xr.open_mfdataset(predicted_pattern)["TREFHT_pred"].load())
++    temp_p = temp_p - temp_p.sel(year=slice(1850, 1900)).mean("year")
++
++    emiss = (
++        xr.open_dataset(emission_path)[emission_var]
++        .isel(member_id=0)
++        .sum(["lat", "lon"])
++    )
++    temp = xr.open_dataset(climate_path)[climate_var].isel(member_id=0)
++    temp = calcmean(temp)
++    temp = temp - temp.sel(year=slice(1850, 1900)).mean("year")
++
++    plt.plot(emiss, temp, label="training set")
++    plt.plot(emiss[0 : len(temp_p)], temp_p, label="predicted")
++    plt.legend()
++    plt.savefig(output)
++
++
++def predict_cumulative_temperature(
++    ckpt_path: str,
++    cond_file: str,
++    cond_var: str,
++    target_file: str,
++    target_var: str,
++    out_dir: str = "predicted",
++    year_range=range(1850, 2101),
++) -> None:
++    """Predict temperature for a range of years given emissions."""
++    with xr.open_dataset(target_file) as ds:
++        da = ds[target_var].load()
++        t_mean = float(da.mean().values)
++        t_std = float(da.std().values)
++
++    for year in year_range:
++        tmp = "cond_year.nc"
++        out_path = f"{out_dir}/pred_TREFHT_{year}.nc"
++        with xr.open_dataset(cond_file) as ds:
++            ds_year = ds.sel(year=[year]).isel(member_id=[0])
++            ds_year.to_netcdf(tmp)
++
++        da = predict_temperature_from_emissions(
++            ckpt_path=ckpt_path,
++            cond_file=tmp,
++            cond_var=cond_var,
++            out_path=out_path,
++            device="auto",
++            batch_size=8,
++            stack_dim="year",
++            member_dim="member_id",
++            lat_name="lat",
++            lon_name="lon",
++            normalize_cond=True,
++            target_mean=None,
++            target_std=None,
++        )
++        da = unstandardize(da, t_mean, t_std) - 273.1
++        da.to_netcdf(out_path)
+diff --git a/train.sh b/train.sh
+index 646037c..d87d9fb 100644
+--- a/train.sh
++++ b/train.sh
+@@ -2,4 +2,4 @@ export OMP_NUM_THREADS=1
+ export MKL_NUM_THREADS=1
+ export NCCL_ASYNC_ERROR_HANDLING=1
+ export TORCH_NCCL_BLOCKING_WAIT=1
+-torchrun --standalone --nproc_per_node=4 train.py
++torchrun --standalone --nproc_per_node=4 main.py train --config configs/baseline
+diff --git a/train.py b/training.py
+similarity index 97%
+rename from train.py
+rename to training.py
+index dc0093f..c9155b8 100644
+--- a/train.py
++++ b/training.py
+@@ -18,8 +18,6 @@ from collections import deque
+ from torch.utils.tensorboard import SummaryWriter
+ from dataset_single_member import WindowedAllMembersDataset
+ from dataset_single_member import WindowedAllMembersDataset_random
+-from utils_conf import load_config,apply_overrides
+-import json, os, pathlib, argparse
+ 
+ class LossLogger:
+     def __init__(self, path, smooth=100):
+@@ -974,7 +972,7 @@ def load_checkpoint(
+     return start_epoch
+ 
+ 
+-def main(config: Dict[str, Any]):
++def train_model(config: Dict[str, Any]):
+     setup_distributed()
+     local_rank = int(os.environ.get("LOCAL_RANK", 0))
+     device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
+@@ -982,6 +980,7 @@ def main(config: Dict[str, Any]):
+     data_cfg = config["data"]
+     train_cfg = config["train"]
+     unet_cfg = config["unet"]
++    dataset_cfg = config["dataset"]
+ 
+     save_dir = train_cfg.get("save_dir", "runs/exp1")
+     os.makedirs(save_dir, exist_ok=True)
+@@ -1017,15 +1016,15 @@ def main(config: Dict[str, Any]):
+     #CROP = (128, 128)             # tiles
+     ds = WindowedAllMembersDataset_random(
+         cond_np, tgt_np,
+-        K=cfg["dataset"]["K"],
+-        center=cfg["dataset"]["center"],
+-        crop_hw=tuple(cfg["dataset"]["crop_hw"]) if cfg["dataset"]["crop_hw"] else None,
+-        crop_mode=cfg["dataset"]["crop_mode"],
+-        time_reverse_p=cfg["dataset"]["time_reverse_p"],
+-        sample_mode=cfg["dataset"]["sample_mode"],
+-        window_radius=cfg["dataset"]["window_radius"],
+-        keep_chronology=cfg["dataset"]["keep_chronology"],
+-        causal=cfg["dataset"]["causal"],
++        K=dataset_cfg["K"],
++        center=dataset_cfg["center"],
++        crop_hw=tuple(dataset_cfg["crop_hw"]) if dataset_cfg["crop_hw"] else None,
++        crop_mode=dataset_cfg["crop_mode"],
++        time_reverse_p=dataset_cfg["time_reverse_p"],
++        sample_mode=dataset_cfg["sample_mode"],
++        window_radius=dataset_cfg["window_radius"],
++        keep_chronology=dataset_cfg["keep_chronology"],
++        causal=dataset_cfg["causal"],
+     )
+     sampler = None
+     if is_dist():
+@@ -1177,20 +1176,3 @@ def main(config: Dict[str, Any]):
+         loss_logger.close()
+     
+ 
+-
+-if __name__ == "__main__":
+-    parser = argparse.ArgumentParser()
+-    parser.add_argument("--config", type=str, required=True,
+-                        help="Path to config (JSON or YAML)")
+-    parser.add_argument("--set", nargs="*", default=[],
+-                        help='Dot overrides, e.g. train.batch_size=4 unet.base_ch=64')
+-    args = parser.parse_args()
+-
+-    cfg = load_config(args.config)
+-    apply_overrides(cfg, args.set)
+-    print(cfg)
+-    #cfg = default_config
+-    # If you prefer a JSON file:
+-    # with open("config.json") as f:
+-    #     cfg = json.load(f)
+-    main(cfg)
