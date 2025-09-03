@@ -33,6 +33,9 @@ from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
 from functools import partial
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
+from torch.distributed.fsdp.fully_sharded_data_parallel import CPUOffload
+from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper, CheckpointImpl
+
 # --- NEW: optional backends (FSDP / DeepSpeed) ---
 import contextlib
 try:
@@ -104,6 +107,33 @@ def _area_weighted_mean(tensor: torch.Tensor) -> torch.Tensor:
     w = _latitude_weights(H, tensor.device).view(1, 1, H, 1)
     return (tensor * w).mean(dim=(-2, -1))
 
+
+def apply_act_ckpt_to_unet(unet):
+    """
+    Recursively wraps heavy compute blocks in activation checkpointing.
+    Edit the `TARGETS` list to match your block class names.
+    """
+    # Put your block class names here (strings are fine)
+    TARGETS = {
+        "ResBlock", "ResidualBlock", "ConvBlock",
+        "AttentionBlock", "SelfAttention2d", "CrossAttention",
+        "DownBlock", "UpBlock", "MidBlock"
+    }
+
+    for name, m in list(unet.named_children()):
+        cls_name = m.__class__.__name__
+        # Heuristic: checkpoint modules that (a) are in TARGETS or (b) have params and are not containers
+        is_target = (cls_name in TARGETS)
+        has_params = any(p.requires_grad or True for p in m.parameters(recurse=False))
+        has_children = any(True for _ in m.children())
+
+        if is_target or (has_params and not has_children):
+            wrapped = checkpoint_wrapper(
+                m, checkpoint_impl=CheckpointImpl.NO_REENTRANT
+            )
+            setattr(unet, name, wrapped)
+        else:
+            apply_act_ckpt_to_unet(m)  # recurse
 
 # flag for torchvision availability (for fast grids/saving)
 try:
@@ -721,19 +751,20 @@ def _make_sharding_strategy(s):
     return m[key]
 
 def wrap_fsdp(model, fsdp_cfg):
-    auto_wrap_policy = partial(
-        size_based_auto_wrap_policy,
-        min_num_params=fsdp_cfg.get("min_params", 1_000_000),
-    )
-    mp = _make_mixed_precision(fsdp_cfg.get("mixed_precision", None))
-    strat = _make_sharding_strategy(fsdp_cfg.get("sharding_strategy", None))
+    mp = MixedPrecision(param_dtype=torch.bfloat16, reduce_dtype=torch.bfloat16, buffer_dtype=torch.bfloat16) \
+         if fsdp_cfg.get("mp", "bf16")=="bf16" else \
+         MixedPrecision(param_dtype=torch.float16,  reduce_dtype=torch.float16,  buffer_dtype=torch.float16)
+
+    auto_wrap_policy = partial(size_based_auto_wrap_policy,
+                               min_num_params=fsdp_cfg.get("min_params", 200_000))  # smaller => more wrapping
 
     return FSDP(
         model,
         auto_wrap_policy=auto_wrap_policy,
-        use_orig_params=True,  # avoids the mixed requires_grad flattening issue
-        mixed_precision=mp,    # now a MixedPrecision or None, not a string
-        sharding_strategy=strat,
+        sharding_strategy=ShardingStrategy.FULL_SHARD,
+        mixed_precision=mp,
+        use_orig_params=True,
+        cpu_offload=CPUOffload(offload_params=fsdp_cfg.get("cpu_offload", False)),
         device_id=(torch.cuda.current_device() if torch.cuda.is_available() else None),
     )
 
@@ -988,6 +1019,8 @@ def main(config: Dict[str, Any]):
 
     print('build model')
     unet = build_model_from_config(unet_cfg).to(device)
+    if train_cfg.get("activation_checkpointing", True):
+        apply_act_ckpt_to_unet(unet)
     print('diffusion')
     diffusion = Diffusion(
         unet,
