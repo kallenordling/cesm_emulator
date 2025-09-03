@@ -46,8 +46,6 @@
     "max_grad_norm": 1.0,
     "sample_batch": 1,
     "seed": 42,
-
-    /* IMPORTANT: your script reads these from `train` */
     "timesteps": 1000,
     "beta_schedule": "linear",
 
@@ -79,8 +77,6 @@
       "gradient_accumulation_steps": 1
     }
   },
-
-  /* Top-level mirrors (your loader merges top-level + train.* in the patched script) */
   "fsdp": {
     "enabled": true,
     "sharding": "full",
