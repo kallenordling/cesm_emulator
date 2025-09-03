@@ -668,8 +668,6 @@ def _mp_policy(kind: str | None):
     return None
 
 def wrap_fsdp(model, fsdp_cfg):
-    # optional: ignore frozen params to avoid sharding them
-    frozen_params = [p for p in model.parameters() if not p.requires_grad]
     auto_wrap_policy = partial(
         size_based_auto_wrap_policy,
         min_num_params=fsdp_cfg.get("min_params", 1_000_000),
@@ -677,12 +675,12 @@ def wrap_fsdp(model, fsdp_cfg):
 
     return FSDP(
         model,
-        auto_wrap_policy=auto_wrap_policy,      # <-- pass the callable, not call it
+        auto_wrap_policy=auto_wrap_policy,
+        use_orig_params=True,  # key to avoid the uniform requires_grad issue
         mixed_precision=fsdp_cfg.get("mixed_precision", None),
         sharding_strategy=fsdp_cfg.get("sharding_strategy", None),
-        device_id=fsdp_cfg.get("device_id", None),
-        use_orig_params=True,                   # avoids the flattening requires_grad clash
-        ignored_params=frozen_params or None,   # optional
+        device_id=fsdp_cfg.get("device_id", torch.cuda.current_device()
+                               if torch.cuda.is_available() else None),
     )
 
 # ----------------- NEW: DeepSpeed cfg -----------------
