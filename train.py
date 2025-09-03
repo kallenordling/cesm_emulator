@@ -21,7 +21,13 @@ from dataset_single_member import WindowedAllMembersDataset_random
 from utils_conf import load_config, apply_overrides
 import json, os, pathlib, argparse
 from functools import partial
-from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+import torch
+from torch.distributed.fsdp import (
+    FullyShardedDataParallel as FSDP,
+    MixedPrecision,
+    ShardingStrategy,
+)
+from torch.distributed.fsdp.wrap import size_based_auto_wrap_policyfrom torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
 from functools import partial
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
@@ -667,20 +673,68 @@ def _mp_policy(kind: str | None):
         return MixedPrecision(param_dtype=torch.float16, reduce_dtype=torch.float16, buffer_dtype=torch.float16)
     return None
 
+def _make_mixed_precision(mp_cfg):
+    """Accepts None | str | dict | MixedPrecision -> MixedPrecision|None"""
+    if mp_cfg is None or mp_cfg is False:
+        return None
+    if isinstance(mp_cfg, MixedPrecision):
+        return mp_cfg
+    if isinstance(mp_cfg, str):
+        s = mp_cfg.lower()
+        if s in ("bf16", "bfloat16"):
+            dt = torch.bfloat16
+        elif s in ("fp16", "float16", "amp"):
+            dt = torch.float16
+        elif s in ("fp32", "float32", "none"):
+            return None
+        else:
+            raise ValueError(f"Unknown mixed_precision string: {mp_cfg}")
+        return MixedPrecision(param_dtype=dt, reduce_dtype=dt, buffer_dtype=dt)
+    if isinstance(mp_cfg, dict):
+        map_dt = {
+            "bf16": torch.bfloat16, "bfloat16": torch.bfloat16,
+            "fp16": torch.float16, "float16": torch.float16,
+            "fp32": torch.float32, "float32": torch.float32,
+        }
+        p = map_dt.get(str(mp_cfg.get("param", "fp32")).lower(), torch.float32)
+        r = map_dt.get(str(mp_cfg.get("reduce", "fp32")).lower(), torch.float32)
+        b = map_dt.get(str(mp_cfg.get("buffer", "fp32")).lower(), torch.float32)
+        return MixedPrecision(param_dtype=p, reduce_dtype=r, buffer_dtype=b)
+    return None
+
+def _make_sharding_strategy(s):
+    """Accepts None | str | ShardingStrategy -> ShardingStrategy|None"""
+    if not s:
+        return None
+    if isinstance(s, ShardingStrategy):
+        return s
+    m = {
+        "full_shard": ShardingStrategy.FULL_SHARD,
+        "shard_grad_op": ShardingStrategy.SHARD_GRAD_OP,
+        "no_shard": ShardingStrategy.NO_SHARD,
+        "hybrid_shard": ShardingStrategy.HYBRID_SHARD,
+    }
+    key = str(s).lower()
+    if key not in m:
+        raise ValueError(f"Unknown sharding_strategy: {s}")
+    return m[key]
+
 def wrap_fsdp(model, fsdp_cfg):
     auto_wrap_policy = partial(
         size_based_auto_wrap_policy,
         min_num_params=fsdp_cfg.get("min_params", 1_000_000),
     )
+    mp = _make_mixed_precision(fsdp_cfg.get("mixed_precision", None))
+    strat = _make_sharding_strategy(fsdp_cfg.get("sharding_strategy", None))
 
     return FSDP(
         model,
         auto_wrap_policy=auto_wrap_policy,
-        use_orig_params=True,  # key to avoid the uniform requires_grad issue
-        mixed_precision=fsdp_cfg.get("mixed_precision", None),
-        sharding_strategy=fsdp_cfg.get("sharding_strategy", None),
-        device_id=fsdp_cfg.get("device_id", torch.cuda.current_device()
-                               if torch.cuda.is_available() else None),
+        use_orig_params=True,  # avoids the mixed requires_grad flattening issue
+        mixed_precision=mp,    # now a MixedPrecision or None, not a string
+        sharding_strategy=strat,
+        device_id=(torch.cuda.current_device() if torch.cuda.is_available() else None),
+    )                     if torch.cuda.is_available() else None),
     )
 
 # ----------------- NEW: DeepSpeed cfg -----------------
