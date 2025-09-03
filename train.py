@@ -27,7 +27,8 @@ from torch.distributed.fsdp import (
     MixedPrecision,
     ShardingStrategy,
 )
-from torch.distributed.fsdp.wrap import size_based_auto_wrap_policyfrom torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
 from functools import partial
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
