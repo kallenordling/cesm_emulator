@@ -21,7 +21,8 @@ from dataset_single_member import WindowedAllMembersDataset_random
 from utils_conf import load_config, apply_overrides
 import json, os, pathlib, argparse
 from functools import partial
-
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
 # --- NEW: optional backends (FSDP / DeepSpeed) ---
 import contextlib
 try:
@@ -663,40 +664,22 @@ def _mp_policy(kind: str | None):
         return MixedPrecision(param_dtype=torch.float16, reduce_dtype=torch.float16, buffer_dtype=torch.float16)
     return None
 
-def wrap_fsdp(model: nn.Module, fsdp_cfg: dict) -> nn.Module:
-    assert _HAS_FSDP, "FSDP not available"
+def wrap_fsdp(model, fsdp_cfg):
+    # optional: collect frozen params so FSDP doesn't try to shard/flatten them
+    frozen_params = [p for p in model.parameters() if not p.requires_grad]
 
-    shard = fsdp_cfg.get("sharding", "full").lower()
-    sharding_strategy = (
-        ShardingStrategy.FULL_SHARD
-        if shard == "full"
-        else ShardingStrategy.SHARD_GRAD_OP
+    auto_wrap_policy = size_based_auto_wrap_policy(
+        min_num_params=fsdp_cfg.get("min_params", 1_000_000)
     )
-
-    # Build an auto-wrap policy correctly using functools.partial
-    wrap_min = fsdp_cfg.get("wrap_min_params", 1e6)
-    auto_wrap = None
-    try:
-        if wrap_min is not None and float(wrap_min) > 0:
-            auto_wrap = partial(size_based_auto_wrap_policy, min_num_params=int(wrap_min))
-            
-    except TypeError:
-        # Very old torch versions: fall back to no auto-wrap
-        auto_wrap = None
-
-    cpu_off = CPUOffload(offload_params=bool(fsdp_cfg.get("cpu_offload", False)))
-
-    mp = _mp_policy(fsdp_cfg.get("mixed_precision", "bf16"))
 
     return FSDP(
         model,
-        sharding_strategy=sharding_strategy,
-        cpu_offload=cpu_off,
-        mixed_precision=mp,
-        auto_wrap_policy=auto_wrap,
-        backward_prefetch=BackwardPrefetch.BACKWARD_PRE,
-        # Optional knobs if you use PT>=2.0; uncomment if helpful:
-        # use_orig_params=True,
+        auto_wrap_policy=auto_wrap_policy,
+        mixed_precision=fsdp_cfg.get("mixed_precision", None),
+        sharding_strategy=fsdp_cfg.get("sharding_strategy", None),
+        device_id=fsdp_cfg.get("device_id", None),
+        use_orig_params=True,                   # <—— key change
+        ignored_params=frozen_params or None,   # <—— optional but recommended
     )
 
 # ----------------- NEW: DeepSpeed cfg -----------------
