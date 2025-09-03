@@ -1,12 +1,12 @@
 {
   "data": {
-    "cond_file": "../CESM2-LESN_emulator/co2_final.nc",
-    "target_file": "../CESM2-LESN_emulator/splits/fold_1/climate_data_train_fold1.nc",
+    "cond_file": "./CESM2-LESN_emulator/co2_final.nc",
+    "target_file": "./CESM2-LESN_emulator/splits/fold_1/climate_data_train_fold1.nc",
     "run_dir": "runs/exp_baseline",
     "cond_var": "CO2_em_anthro",
     "target_var": "TREFHT",
     "member_dim": "member_id",
-    "year_dim": "year",
+    "stack_dim": "year",
     "lat_name": "lat",
     "lon_name": "lon",
     "normalize_cond": true
@@ -33,44 +33,72 @@
     "dropout": 0.0,
     "use_checkpoint": true
   },
-  "diffusion": {
-    "timesteps": 1000,
-    "beta_schedule": "linear"
-  },
   "train": {
+    "backend": "fsdp",
     "batch_size": 64,
     "accum_steps": 4,
     "num_workers": 1,
-    "epochs": 50,
+    "num_epochs": 10000,
+    "save_every": 10,
+    "sample_every": 100,
+    "save_dir": "runs/exp_test2",
     "use_amp": true,
     "max_grad_norm": 1.0,
     "sample_batch": 1,
     "seed": 42,
-    "save_dir": "runs/exp_test2",
-    "num_epochs": 10000,
-    "save_every": 10,
-    "sample_every": 100,
-    "backend": "fsdp",
-  }
 
+    /* IMPORTANT: your script reads these from `train` */
+    "timesteps": 1000,
+    "beta_schedule": "linear",
+
+    "optimizer": {
+      "lr": 0.0002,
+      "betas": [0.9, 0.999],
+      "weight_decay": 0.0001
+    },
+
+    "fsdp": {
+      "enabled": true,
+      "sharding": "full",
+      "wrap_min_params": 1000000,
+      "cpu_offload": false,
+      "mixed_precision": "bf16"
+    },
+
+    "deepspeed": {
+      "enabled": false,
+      "zero_stage": 3,
+      "bf16": true,
+      "offload_params_to_cpu": true,
+      "offload_optimizer_to_cpu": true,
+      "nvme_offload": false,
+      "optimizer": {
+        "type": "AdamW",
+        "params": { "lr": 0.0002, "betas": [0.9, 0.999], "eps": 1e-8, "weight_decay": 0.0001 }
+      },
+      "gradient_accumulation_steps": 1
+    }
+  },
+
+  /* Top-level mirrors (your loader merges top-level + train.* in the patched script) */
   "fsdp": {
     "enabled": true,
-    "sharding": "full",          // "full" (ShardingStrategy.FULL_SHARD) or "grad" (ShardingStrategy.SHARD_GRAD_OP)
-    "wrap_min_params": 1e6,      // auto-wrap blocks with >= this many params
-    "cpu_offload": false,        // true if you need to push params/grad to CPU
-    "mixed_precision": "bf16"    // "bf16" | "fp16" | "none"
-    },
+    "sharding": "full",
+    "wrap_min_params": 1000000,
+    "cpu_offload": false,
+    "mixed_precision": "bf16"
+  },
   "deepspeed": {
     "enabled": false,
     "zero_stage": 3,
     "bf16": true,
     "offload_params_to_cpu": true,
     "offload_optimizer_to_cpu": true,
-    "nvme_offload": false,       // set true only if you have fast local NVMe
+    "nvme_offload": false,
     "optimizer": {
-        "type": "AdamW",
-        "params": {"lr": 2e-4, "betas": [0.9, 0.999], "eps": 1e-8, "weight_decay": 1e-4}
-        },
+      "type": "AdamW",
+      "params": { "lr": 0.0002, "betas": [0.9, 0.999], "eps": 1e-8, "weight_decay": 0.0001 }
+    },
     "gradient_accumulation_steps": 1
-    }
+  }
 }
