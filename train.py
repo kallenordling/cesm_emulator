@@ -734,7 +734,6 @@ def wrap_fsdp(model, fsdp_cfg):
         mixed_precision=mp,    # now a MixedPrecision or None, not a string
         sharding_strategy=strat,
         device_id=(torch.cuda.current_device() if torch.cuda.is_available() else None),
-    )                     if torch.cuda.is_available() else None),
     )
 
 # ----------------- NEW: DeepSpeed cfg -----------------
