@@ -23,6 +23,9 @@ import json, os, pathlib, argparse
 from functools import partial
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
+from functools import partial
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
 # --- NEW: optional backends (FSDP / DeepSpeed) ---
 import contextlib
 try:
@@ -665,21 +668,21 @@ def _mp_policy(kind: str | None):
     return None
 
 def wrap_fsdp(model, fsdp_cfg):
-    # optional: collect frozen params so FSDP doesn't try to shard/flatten them
+    # optional: ignore frozen params to avoid sharding them
     frozen_params = [p for p in model.parameters() if not p.requires_grad]
-
-    auto_wrap_policy = size_based_auto_wrap_policy(
-        min_num_params=fsdp_cfg.get("min_params", 1_000_000)
+    auto_wrap_policy = partial(
+        size_based_auto_wrap_policy,
+        min_num_params=fsdp_cfg.get("min_params", 1_000_000),
     )
 
     return FSDP(
         model,
-        auto_wrap_policy=auto_wrap_policy,
+        auto_wrap_policy=auto_wrap_policy,      # <-- pass the callable, not call it
         mixed_precision=fsdp_cfg.get("mixed_precision", None),
         sharding_strategy=fsdp_cfg.get("sharding_strategy", None),
         device_id=fsdp_cfg.get("device_id", None),
-        use_orig_params=True,                   # <—— key change
-        ignored_params=frozen_params or None,   # <—— optional but recommended
+        use_orig_params=True,                   # avoids the flattening requires_grad clash
+        ignored_params=frozen_params or None,   # optional
     )
 
 # ----------------- NEW: DeepSpeed cfg -----------------
