@@ -14,7 +14,7 @@
   "dataset": {
     "K": 3,
     "center": true,
-    "crop_hw": [128, 128],
+    "crop_hw": [64,64],
     "crop_mode": "random",
     "time_reverse_p": 0.5,
     "sample_mode": "consecutive",
