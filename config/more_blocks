@@ -49,6 +49,28 @@
     "save_dir": "runs/exp_test2",
     "num_epochs": 10000,
     "save_every": 10,
-    "sample_every": 100
+    "sample_every": 100,
+    "backend": "fsdp",
   }
+
+  "fsdp": {
+    "enabled": true,
+    "sharding": "full",          // "full" (ShardingStrategy.FULL_SHARD) or "grad" (ShardingStrategy.SHARD_GRAD_OP)
+    "wrap_min_params": 1e6,      // auto-wrap blocks with >= this many params
+    "cpu_offload": false,        // true if you need to push params/grad to CPU
+    "mixed_precision": "bf16"    // "bf16" | "fp16" | "none"
+    },
+  "deepspeed": {
+    "enabled": false,
+    "zero_stage": 3,
+    "bf16": true,
+    "offload_params_to_cpu": true,
+    "offload_optimizer_to_cpu": true,
+    "nvme_offload": false,       // set true only if you have fast local NVMe
+    "optimizer": {
+        "type": "AdamW",
+        "params": {"lr": 2e-4, "betas": [0.9, 0.999], "eps": 1e-8, "weight_decay": 1e-4}
+        },
+    "gradient_accumulation_steps": 1
+    }
 }
